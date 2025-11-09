@@ -1,0 +1,48 @@
+{
+  "name": "clickupall",
+  "version": "4.0.0",
+  "description": "Advanced ClickUp Task Management System with WhatsApp Integration and AI-Powered Features",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "clickup",
+    "whatsapp",
+    "motivation",
+    "ai",
+    "claude",
+    "openai",
+    "chatgpt",
+    "gemini",
+    "productivity",
+    "task-management",
+    "automation",
+    "notifications",
+    "gamification",
+    "badges",
+    "challenges",
+    "arabic",
+    "team-collaboration"
+  ],
+  "author": "ClickUp All Team",
+  "license": "ISC",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "node-cron": "^3.0.3",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.25.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

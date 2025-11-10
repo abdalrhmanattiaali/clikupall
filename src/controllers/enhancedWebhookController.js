@@ -106,16 +106,30 @@ export async function handleWebhook(req, res) {
       taskData = body.payload;
       taskId = taskData.id;
 
-      // Determine if this is a new task or status change
-      // New tasks have date_created very close to date_updated (within 5 seconds)
-      const dateCreated = taskData.date_created ? parseInt(taskData.date_created) : 0;
-      const dateUpdated = taskData.date_updated ? parseInt(taskData.date_updated) : 0;
-      const isNewTask = Math.abs(dateUpdated - dateCreated) < 5000; // 5 seconds
+      // Determine event type with priority:
+      // 1. Check if task is completed first (most important)
+      // 2. Then check if it's a new task
+      // 3. Otherwise it's a status change
 
-      if (isNewTask) {
-        event = TRIGGER_TYPES.TASK_CREATED;
-      } else {
+      const taskStatus = taskData.status?.status?.toLowerCase().trim();
+      const isCompleted = taskStatus && TASK_STATUS.NON_OPEN.includes(taskStatus);
+
+      if (isCompleted) {
+        // Task is completed - always handle as status change
+        // (handleStatusChanged will emit TASK_COMPLETED event)
         event = TRIGGER_TYPES.STATUS_CHANGED;
+        logger.debug('Completed task detected in automation webhook', { taskId, status: taskStatus });
+      } else {
+        // Not completed - check if it's new or existing task
+        const dateCreated = taskData.date_created ? parseInt(taskData.date_created) : 0;
+        const dateUpdated = taskData.date_updated ? parseInt(taskData.date_updated) : 0;
+        const isNewTask = Math.abs(dateUpdated - dateCreated) < 5000; // 5 seconds
+
+        if (isNewTask) {
+          event = TRIGGER_TYPES.TASK_CREATED;
+        } else {
+          event = TRIGGER_TYPES.STATUS_CHANGED;
+        }
       }
 
       logger.info('Automation webhook received', {
@@ -124,8 +138,9 @@ export async function handleWebhook(req, res) {
         triggerId: body.trigger_id,
         taskId,
         taskName: taskData.name,
-        status: taskData.status?.status,
-        detectedAs: isNewTask ? 'NEW_TASK' : 'STATUS_CHANGE'
+        status: taskStatus,
+        detectedAs: event === TRIGGER_TYPES.TASK_CREATED ? 'NEW_TASK' :
+                    (isCompleted ? 'COMPLETED' : 'STATUS_CHANGE')
       });
     } else {
       // Standard webhook structure: {event, task_id, ...}

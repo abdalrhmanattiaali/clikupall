@@ -1,11 +1,12 @@
 /**
  * Enhanced Notification Service
- * خدمة إدارة الإشعارات الشاملة مع batching ذكي
+ * خدمة إدارة الإشعارات الشاملة مع batching ذكي + AI enhancement
  */
 
 import logger from '../../core/logger.js';
 import eventBus, { EVENTS } from '../../core/eventBus.js';
 import whatsappService from '../whatsapp/whatsappService.js';
+import aiService from '../ai/index.js';
 import { env } from '../../config/env.js';
 import { shortenUrl } from '../../utils/urlShortener.js';
 
@@ -739,7 +740,7 @@ class EnhancedNotificationService {
   }
 
   /**
-   * Build DM for task assignment (more personal)
+   * Build DM for task assignment (more personal + optional AI tip)
    */
   async buildTaskAssignedDM(task, assignee) {
     const aiWeight = task.ai_weight || 10;
@@ -767,14 +768,22 @@ class EnhancedNotificationService {
       }
     }
 
-    message += `\n🔗 ${task.url}\n\n`;
-    message += `💪 *بالتوفيق!*`;
+    message += `\n🔗 ${task.url}`;
+
+    // Try to get AI-generated contextual tip
+    const aiTip = await this.enhanceAssignmentMessage(task, assignee);
+
+    if (aiTip) {
+      message += `\n\n💡 *نصيحة AI:*\n${aiTip}`;
+    }
+
+    message += `\n\n💪 *بالتوفيق!*`;
 
     return message;
   }
 
   /**
-   * Build DM for task completion (with achievements)
+   * Build DM for task completion (with achievements + optional AI enhancement)
    */
   async buildCompletionDM(task, assignee, gamificationResult) {
     let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
@@ -794,19 +803,28 @@ class EnhancedNotificationService {
       message += `• ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
     }
 
-    // Add personalized tip
-    const tips = [
-      '💡 *نصيحة:* حاول إكمال المهام الأصعب في بداية اليوم عندما يكون تركيزك أعلى!',
-      '💡 *نصيحة:* قسّم المهام الكبيرة إلى مهام فرعية أصغر لتحقيق تقدم مستمر!',
-      '💡 *نصيحة:* خصص 25 دقيقة من التركيز الكامل (Pomodoro) ثم استرح 5 دقائق!',
-      '💡 *نصيحة:* راجع مهامك المكتملة أسبوعياً لتقييم تقدمك!',
-      '💡 *نصيحة:* تواصل مع الفريق عند مواجهة عقبات - التعاون يسرّع الإنجاز!',
-      '💡 *نصيحة:* ضع أهدافاً يومية صغيرة وقابلة للتحقيق!'
-    ];
-    const randomTip = tips[Math.floor(Math.random() * tips.length)];
+    // Try to get AI-enhanced personalized message
+    const aiMessage = await this.enhanceCompletionMessage(task, assignee, gamificationResult);
 
-    message += `\n${randomTip}\n\n`;
-    message += `🔥 استمر في الإنجاز!`;
+    if (aiMessage) {
+      // Use AI-generated personalized message
+      message += `\n\n✨ *رسالة شخصية:*\n${aiMessage}\n\n`;
+      message += `🔥 استمر في الإنجاز!`;
+    } else {
+      // Fallback to random tip
+      const tips = [
+        '💡 *نصيحة:* حاول إكمال المهام الأصعب في بداية اليوم عندما يكون تركيزك أعلى!',
+        '💡 *نصيحة:* قسّم المهام الكبيرة إلى مهام فرعية أصغر لتحقيق تقدم مستمر!',
+        '💡 *نصيحة:* خصص 25 دقيقة من التركيز الكامل (Pomodoro) ثم استرح 5 دقائق!',
+        '💡 *نصيحة:* راجع مهامك المكتملة أسبوعياً لتقييم تقدمك!',
+        '💡 *نصيحة:* تواصل مع الفريق عند مواجهة عقبات - التعاون يسرّع الإنجاز!',
+        '💡 *نصيحة:* ضع أهدافاً يومية صغيرة وقابلة للتحقيق!'
+      ];
+      const randomTip = tips[Math.floor(Math.random() * tips.length)];
+
+      message += `\n${randomTip}\n\n`;
+      message += `🔥 استمر في الإنجاز!`;
+    }
 
     return message;
   }
@@ -1230,6 +1248,90 @@ class EnhancedNotificationService {
       isPaused: this.isPaused,
       hasBatchTimer: !!this.batchTimeout
     };
+  }
+
+  // ==================== AI ENHANCEMENT ====================
+
+  /**
+   * Enhance completion message with AI-generated personalized congratulations
+   * Only if env.features.aiNotifications is enabled
+   */
+  async enhanceCompletionMessage(task, assignee, gamificationResult) {
+    if (!env.features.aiNotifications) {
+      return null; // Skip AI, use default message
+    }
+
+    try {
+      const systemPrompt = `أنت مساعد تحفيزي. اكتب رسالة تهنئة شخصية قصيرة (2-3 جمل) بالعربية لشخص أكمل مهمة.`;
+
+      const userMessage = `المستخدم: ${assignee.name}
+المهمة المكتملة: ${task.name}
+النقاط المكتسبة: ${gamificationResult.pointsEarned}
+الأوسمة الجديدة: ${gamificationResult.newBadges?.length || 0}
+الوزن: ${task.ai_weight || 10} نقطة
+التعقيد: ${task.ai_complexity || 'medium'}
+
+اكتب رسالة تهنئة شخصية قصيرة ومحفزة.`;
+
+      const aiMessage = await aiService.generateCompletion(
+        systemPrompt,
+        userMessage,
+        { temperature: 0.8, max_tokens: 150 }
+      );
+
+      logger.debug('AI completion message generated', {
+        taskId: task.id,
+        assignee: assignee.name
+      });
+
+      return aiMessage;
+    } catch (error) {
+      logger.error('AI message generation failed, using default', {
+        error: error.message
+      });
+      return null; // Fallback to default message
+    }
+  }
+
+  /**
+   * Enhance task assignment message with AI-generated contextual tip
+   * Only if env.features.aiNotifications is enabled
+   */
+  async enhanceAssignmentMessage(task, assignee) {
+    if (!env.features.aiNotifications) {
+      return null; // Skip AI, use default message
+    }
+
+    try {
+      const systemPrompt = `أنت مساعد إنتاجية. اقترح نصيحة عملية قصيرة (جملة واحدة) بالعربية لشخص تم تكليفه بمهمة.`;
+
+      const userMessage = `المستخدم: ${assignee.name}
+المهمة: ${task.name}
+الأولوية: ${task.priority_label || 'عادية'}
+الوزن: ${task.ai_weight || 10} نقطة
+التعقيد: ${task.ai_complexity || 'medium'}
+الوقت المتوقع: ${task.ai_estimated_time || 30} دقيقة
+
+اقترح نصيحة عملية واحدة للبدء بهذه المهمة.`;
+
+      const aiTip = await aiService.generateCompletion(
+        systemPrompt,
+        userMessage,
+        { temperature: 0.7, max_tokens: 100 }
+      );
+
+      logger.debug('AI assignment tip generated', {
+        taskId: task.id,
+        assignee: assignee.name
+      });
+
+      return aiTip;
+    } catch (error) {
+      logger.error('AI tip generation failed, using default', {
+        error: error.message
+      });
+      return null; // Fallback to default message
+    }
   }
 }
 

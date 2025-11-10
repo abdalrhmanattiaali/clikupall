@@ -39,8 +39,19 @@ const REQUIRED_VARS = [
 // Validate on load
 validateEnvVars(REQUIRED_VARS);
 
-// Validate AI provider configuration
-const aiProvider = process.env.AI_PROVIDER?.toLowerCase();
+// Validate and normalize AI provider configuration
+const aiProvider = process.env.AI_PROVIDER?.toLowerCase().trim();
+const validProviders = ['claude', 'openai', 'gemini'];
+
+if (!validProviders.includes(aiProvider)) {
+  throw new Error(
+    `Invalid AI_PROVIDER: "${process.env.AI_PROVIDER}"\n` +
+    `Valid options are: ${validProviders.join(', ')}\n` +
+    `Please update your .env file with one of these exact values: claude, openai, or gemini`
+  );
+}
+
+// Validate API key for selected provider
 if (aiProvider === 'claude' && !process.env.ANTHROPIC_API_KEY) {
   throw new Error('ANTHROPIC_API_KEY is required when AI_PROVIDER is set to "claude"');
 }

@@ -10,6 +10,7 @@ import whatsappService from '../whatsapp/whatsappService.js';
 import clickupService from '../clickup/clickupService.js';
 import notificationService from '../notification/notificationService.js';
 import aiService from '../ai/index.js';
+import motivationService from '../motivation/motivationService.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import { TEAM } from '../../config/team.js';
 import { TASK_STATUS } from '../../config/constants.js';
@@ -33,7 +34,42 @@ class SchedulerService {
       return;
     }
 
-    // Morning jobs
+    // ============================================
+    // 🌟 Intelligent Motivation System (4x Daily)
+    // ============================================
+
+    // 08:00 - Morning Motivation (طاقة وحماس للبداية)
+    this.scheduleJob(
+      '0 8 * * *',
+      'Morning Motivation',
+      () => motivationService.sendMotivationalMessage('morning')
+    );
+
+    // 12:00 - Midday Motivation (تركيز واستمرارية)
+    this.scheduleJob(
+      '0 12 * * *',
+      'Midday Motivation',
+      () => motivationService.sendMotivationalMessage('midday')
+    );
+
+    // 16:00 - Afternoon Motivation (دفعة للإنجاز)
+    this.scheduleJob(
+      '0 16 * * *',
+      'Afternoon Motivation',
+      () => motivationService.sendMotivationalMessage('afternoon')
+    );
+
+    // 20:00 - Evening Motivation (تأمل وإنجاز)
+    this.scheduleJob(
+      '0 20 * * *',
+      'Evening Motivation',
+      () => motivationService.sendMotivationalMessage('evening')
+    );
+
+    // ============================================
+    // Other Morning Jobs
+    // ============================================
+
     this.scheduleJob(
       '5 8 * * *',
       'AI Morning Messages',

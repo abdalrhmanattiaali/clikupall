@@ -10,6 +10,7 @@ import clickupService from '../services/clickup/clickupService.js';
 import whatsappService from '../services/whatsapp/whatsappService.js';
 import notificationService from '../services/notification/notificationService.js';
 import schedulerService from '../services/scheduler/schedulerService.js';
+import motivationService from '../services/motivation/motivationService.js';
 import productivityRepo from '../repositories/productivityRepository.js';
 import achievementRepo from '../repositories/achievementRepository.js';
 import { TEAM, findMemberByName } from '../config/team.js';
@@ -267,6 +268,147 @@ router.get('/send-test-message', async (req, res) => {
     });
   } catch (error) {
     logger.error('Test message failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /test/motivation/:timeSlot
+ * Test motivational message generation for specific time slot
+ * Time slots: morning, midday, afternoon, evening
+ */
+router.get('/motivation/:timeSlot', async (req, res) => {
+  try {
+    const { timeSlot } = req.params;
+    const validSlots = ['morning', 'midday', 'afternoon', 'evening'];
+
+    if (!validSlots.includes(timeSlot)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid time slot. Valid options: ${validSlots.join(', ')}`
+      });
+    }
+
+    logger.info(`Testing ${timeSlot} motivational message generation`);
+
+    const message = await motivationService.generateMotivationalMessage(timeSlot);
+
+    res.json({
+      success: true,
+      timeSlot,
+      message,
+      length: message.length,
+      aiProvider: aiService.getProviderName()
+    });
+  } catch (error) {
+    logger.error('Motivation test failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /test/send-motivation/:timeSlot
+ * Send motivational message to WhatsApp group
+ */
+router.post('/send-motivation/:timeSlot', async (req, res) => {
+  try {
+    const { timeSlot } = req.params;
+    const validSlots = ['morning', 'midday', 'afternoon', 'evening'];
+
+    if (!validSlots.includes(timeSlot)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid time slot. Valid options: ${validSlots.join(', ')}`
+      });
+    }
+
+    const result = await motivationService.sendMotivationalMessage(timeSlot);
+
+    res.json({
+      success: result,
+      timeSlot,
+      message: result
+        ? 'Motivational message sent to WhatsApp group!'
+        : 'Failed to send message. Check logs.'
+    });
+  } catch (error) {
+    logger.error('Send motivation failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /test/motivation-context
+ * Get current team context for motivation
+ */
+router.get('/motivation-context', async (req, res) => {
+  try {
+    const context = await motivationService.analyzeTeamContext();
+
+    res.json({
+      success: true,
+      context,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Context analysis failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /test/motivation-history
+ * Get motivation content history
+ */
+router.get('/motivation-history', async (req, res) => {
+  try {
+    const history = motivationService.getContentHistory();
+
+    res.json({
+      success: true,
+      totalMessages: history.length,
+      history: history.map(h => ({
+        timeSlot: h.timeSlot,
+        type: h.type,
+        timestamp: new Date(h.timestamp).toLocaleString('ar-EG', {
+          timeZone: 'Africa/Cairo'
+        }),
+        preview: h.message
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /test/motivation-history
+ * Clear motivation history (for testing)
+ */
+router.delete('/motivation-history', async (req, res) => {
+  try {
+    motivationService.clearHistory();
+
+    res.json({
+      success: true,
+      message: 'Motivation history cleared'
+    });
+  } catch (error) {
     res.status(500).json({
       success: false,
       error: error.message

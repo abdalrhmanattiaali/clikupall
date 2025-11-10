@@ -3,7 +3,8 @@
  * خدمة التعامل مع WhatsApp Web
  */
 
-import { Client, LocalAuth } from 'whatsapp-web.js';
+import pkg from 'whatsapp-web.js';
+const { Client, LocalAuth } = pkg;
 import qrcode from 'qrcode-terminal';
 import { env } from '../../config/env.js';
 import logger from '../../core/logger.js';

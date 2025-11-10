@@ -6,27 +6,10 @@
 import { env } from '../../config/env.js';
 import logger from '../../core/logger.js';
 import { AIError } from '../../core/errors.js';
+import AIProviderInterface from './baseProvider.js';
 import ClaudeProvider from './claudeProvider.js';
 import OpenAIProvider from './openaiProvider.js';
 import GeminiProvider from './geminiProvider.js';
-
-/**
- * AI Provider Interface
- * جميع الـ providers يجب أن تلتزم بهذا الـ interface
- */
-class AIProviderInterface {
-  async generateCompletion(systemPrompt, userMessage) {
-    throw new Error('Method not implemented');
-  }
-
-  async chat(messages) {
-    throw new Error('Method not implemented');
-  }
-
-  isAvailable() {
-    throw new Error('Method not implemented');
-  }
-}
 
 /**
  * AI Service Class

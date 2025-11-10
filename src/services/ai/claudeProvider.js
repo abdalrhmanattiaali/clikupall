@@ -6,7 +6,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '../../config/env.js';
 import logger from '../../core/logger.js';
-import { AIProviderInterface } from './index.js';
+import AIProviderInterface from './baseProvider.js';
 
 class ClaudeProvider extends AIProviderInterface {
   constructor() {

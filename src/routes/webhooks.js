@@ -10,7 +10,7 @@ import enhancedWebhookController from '../controllers/enhancedWebhookController.
 const router = express.Router();
 
 /**
- * POST /webhooks/clickup
+ * POST /webhooks/clickup/:webhookId?
  * Universal ClickUp webhook handler for ALL events (20+ events)
  * Use this endpoint for all ClickUp webhooks
  *
@@ -20,7 +20,12 @@ const router = express.Router();
  * - Checklists: item resolved, all resolved
  * - Subtasks: created, all resolved
  * - Comments: posted, updated
+ *
+ * URL formats:
+ * - /webhooks/clickup (without ID)
+ * - /webhooks/clickup/your-webhook-id (with custom ID for tracking)
  */
+router.post('/clickup/:webhookId?', enhancedWebhookController.handleWebhook);
 router.post('/clickup', enhancedWebhookController.handleWebhook);
 
 // Legacy endpoints (backward compatibility)

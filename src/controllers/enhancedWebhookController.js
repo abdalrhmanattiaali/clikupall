@@ -74,6 +74,9 @@ const TRIGGER_CATEGORIES = {
  */
 export async function handleWebhook(req, res) {
   try {
+    // Extract webhook ID from URL (if provided)
+    const webhookId = req.params.webhookId || 'default';
+
     // Parse body - handle Buffer, string, or object
     let body;
     if (Buffer.isBuffer(req.body)) {
@@ -86,33 +89,72 @@ export async function handleWebhook(req, res) {
 
     // Handle ClickUp test ping
     if (body.body && body.body.includes('Test message')) {
-      logger.info('Received ClickUp webhook test ping');
-      return res.status(200).json({ success: true, message: 'Webhook endpoint is working!' });
+      logger.info('Received ClickUp webhook test ping', { webhookId });
+      return res.status(200).json({ success: true, message: 'Webhook endpoint is working!', webhookId });
     }
 
     // Handle ClickUp webhook challenge (initial setup)
     if (body.challenge) {
-      logger.info('Received ClickUp webhook challenge');
+      logger.info('Received ClickUp webhook challenge', { webhookId });
       return res.status(200).json({ challenge: body.challenge });
     }
 
-    const event = body.event;
-    const taskId = body.task_id;
+    // Handle automation webhook structure: {auto_id, trigger_id, date, payload}
+    let event, taskId, taskData = null;
 
-    if (!event || !taskId) {
-      logger.warn('Webhook missing event or task_id', {
-        hasEvent: !!event,
-        hasTaskId: !!taskId,
-        bodyKeys: Object.keys(body),
-        bodyPreview: JSON.stringify(body).substring(0, 200)
+    if (body.auto_id && body.trigger_id && body.payload) {
+      // This is an automation webhook - extract task from payload
+      taskData = body.payload;
+      taskId = taskData.id;
+
+      // Determine event type from task status or default to updated
+      if (taskData.status) {
+        const statusName = taskData.status.status?.toLowerCase();
+        if (statusName === 'complete' || statusName === 'closed') {
+          event = TRIGGER_TYPES.STATUS_CHANGED;
+        } else {
+          event = TRIGGER_TYPES.TASK_UPDATED;
+        }
+      } else {
+        event = TRIGGER_TYPES.TASK_UPDATED;
+      }
+
+      logger.info('Automation webhook received', {
+        webhookId,
+        autoId: body.auto_id,
+        triggerId: body.trigger_id,
+        taskId,
+        taskName: taskData.name
       });
-      return res.status(400).json({ error: 'Missing event or task_id' });
+    } else {
+      // Standard webhook structure: {event, task_id, ...}
+      event = body.event;
+      taskId = body.task_id;
+
+      if (!event || !taskId) {
+        logger.warn('Webhook missing event or task_id', {
+          webhookId,
+          hasEvent: !!event,
+          hasTaskId: !!taskId,
+          bodyKeys: Object.keys(body),
+          bodyPreview: JSON.stringify(body).substring(0, 200)
+        });
+        return res.status(400).json({ error: 'Missing event or task_id' });
+      }
+
+      logger.info('Standard webhook received', { webhookId, event, taskId });
     }
 
-    logger.info('Webhook received', { event, taskId });
-
-    // Fetch complete task data from ClickUp API and store in database
-    const task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
+    // Fetch or use complete task data
+    let task;
+    if (taskData) {
+      // Use task data from automation webhook payload - transform and store
+      task = enhancedClickUpService.transformTaskData(taskData);
+      await databaseService.upsertTask(task);
+    } else {
+      // Fetch complete task data from ClickUp API and store in database
+      task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
+    }
 
     // Calculate AI weight if not already done
     if (!task.ai_weight) {
@@ -121,13 +163,13 @@ export async function handleWebhook(req, res) {
 
     // Store event in database
     const eventData = {
-      event_id: body.webhook_id || `${taskId}_${Date.now()}`,
+      event_id: body.webhook_id || body.trigger_id || `${taskId}_${Date.now()}`,
       task_id: taskId,
       trigger_type: event,
       trigger_category: categorizeTrigger(event),
-      changed_by_id: body.history_items?.[0]?.user?.id?.toString() || null,
-      changed_by_username: body.history_items?.[0]?.user?.username || null,
-      changed_at: body.history_items?.[0]?.date ? parseInt(body.history_items[0].date) : Date.now(),
+      changed_by_id: body.history_items?.[0]?.user?.id?.toString() || taskData?.creator?.id?.toString() || null,
+      changed_by_username: body.history_items?.[0]?.user?.username || taskData?.creator?.username || null,
+      changed_at: body.history_items?.[0]?.date ? parseInt(body.history_items[0].date) : (body.date ? new Date(body.date).getTime() : Date.now()),
       field_name: body.history_items?.[0]?.field || null,
       prev_value: body.history_items?.[0]?.before ? JSON.stringify(body.history_items[0].before) : null,
       next_value: body.history_items?.[0]?.after ? JSON.stringify(body.history_items[0].after) : null,
@@ -158,7 +200,7 @@ export async function handleWebhook(req, res) {
       // Continue anyway - don't fail the webhook
     }
 
-    res.status(200).json({ success: true, event, taskId });
+    res.status(200).json({ success: true, event, taskId, webhookId });
   } catch (error) {
     logger.error('Webhook handling error', {
       error: error.message,

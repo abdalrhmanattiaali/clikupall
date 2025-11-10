@@ -4,7 +4,7 @@
  */
 
 import axios from 'axios';
-import { CLICKUP_API_KEY, CLICKUP_TEAM_ID } from '../../config/env.js';
+import { env } from '../../config/env.js';
 import logger from '../../core/logger.js';
 import databaseService from '../../database/index.js';
 
@@ -12,7 +12,7 @@ class EnhancedClickUpService {
   constructor() {
     this.baseURL = 'https://api.clickup.com/api/v2';
     this.headers = {
-      'Authorization': CLICKUP_API_KEY,
+      'Authorization': env.clickup.apiToken,
       'Content-Type': 'application/json'
     };
   }
@@ -231,7 +231,7 @@ class EnhancedClickUpService {
 
       // Get all spaces
       const spacesResponse = await axios.get(
-        `${this.baseURL}/team/${CLICKUP_TEAM_ID}/space`,
+        `${this.baseURL}/team/${env.clickup.teamId}/space`,
         { headers: this.headers, params: { archived: false } }
       );
 

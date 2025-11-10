@@ -10,7 +10,6 @@ import enhancedClickUpService from '../services/clickup/enhancedClickupService.j
 import taskWeightingService from '../services/ai/taskWeightingService.js';
 import gamificationService from '../services/gamification/gamificationService.js';
 import databaseService from '../database/index.js';
-import whatsappService from '../services/whatsapp/whatsappService.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
 import { TASK_STATUS } from '../config/constants.js';
 
@@ -318,43 +317,12 @@ async function routeToHandler(event, body, task) {
 async function handleTaskCreated(task, body) {
   const assignees = getAssigneesWithInfo(task);
 
-  const aiWeight = task.ai_weight || 10;
-  const complexity = task.ai_complexity || 'medium';
-
-  let message = `📝 *مهمة جديدة*\n\n`;
-  message += `*الاسم:* ${task.name}\n`;
-  message += `*الأولوية:* ${task.priority_label || 'عادية'}\n`;
-  message += `*الوزن AI:* ${aiWeight} نقطة (${translateComplexity(complexity)})\n`;
-
-  if (task.ai_estimated_time) {
-    message += `*الوقت المتوقع:* ${task.ai_estimated_time} دقيقة\n`;
-  }
-
-  if (assignees.length > 0) {
-    message += `*المكلفون:* ${assignees.map(a => a.name).join(', ')}\n`;
-  }
-
-  if (task.due_date) {
-    const dueDate = new Date(parseInt(task.due_date));
-    message += `*الموعد النهائي:* ${dueDate.toLocaleDateString('ar-EG')}\n`;
-  }
-
-  message += `\n🔗 ${task.url}`;
-
-  await whatsappService.sendToGroup(message);
-
-  // Send to assignees privately
-  for (const assignee of assignees) {
-    if (assignee.phone) {
-      await whatsappService.sendToUser(assignee.phone, message);
-    }
-  }
-
+  // Emit event for notification service to handle
   eventBus.emitEvent(EVENTS.TASK_CREATED, { task, assignees });
 
-  logger.success('Task created notification sent', {
+  logger.success('Task created event emitted', {
     taskId: task.id,
-    aiWeight,
+    aiWeight: task.ai_weight || 10,
     assignees: assignees.length
   });
 }
@@ -367,35 +335,27 @@ async function handleAssigneeAdded(task, historyItem, changedBy) {
   if (!newAssignee) return;
 
   const member = findMemberById(newAssignee.id) || findMemberByEmail(newAssignee.email);
-  const assigneeName = member?.name || newAssignee.username;
+  const assigneeInfo = member ? {
+    id: member.id,
+    name: member.name,
+    phone: member.phone,
+    email: member.email
+  } : {
+    id: newAssignee.id,
+    name: newAssignee.username,
+    email: newAssignee.email
+  };
 
-  const aiWeight = task.ai_weight || 10;
+  // Emit event for notification service
+  eventBus.emitEvent(EVENTS.TASK_ASSIGNED, {
+    task,
+    assignees: [assigneeInfo],
+    assignedBy: changedBy
+  });
 
-  let message = `👤 *تم تكليفك بمهمة جديدة*\n\n`;
-  message += `*المهمة:* ${task.name}\n`;
-  message += `*الأولوية:* ${task.priority_label || 'عادية'}\n`;
-  message += `*الوزن:* ${aiWeight} نقطة 💎\n`;
-  message += `*كلّف بواسطة:* ${changedBy}\n`;
-
-  if (task.due_date) {
-    const dueDate = new Date(parseInt(task.due_date));
-    const daysUntil = Math.ceil((dueDate - Date.now()) / (1000 * 60 * 60 * 24));
-    message += `*الموعد النهائي:* بعد ${daysUntil} يوم\n`;
-  }
-
-  message += `\n🔗 ${task.url}`;
-
-  // Send to group
-  await whatsappService.sendToGroup(`📢 تم تكليف *${assigneeName}* بمهمة "${task.name}" (${aiWeight} نقطة)`);
-
-  // Send to assignee
-  if (member?.phone) {
-    await whatsappService.sendToUser(member.phone, message);
-  }
-
-  logger.success('Assignee added notification sent', {
+  logger.success('Assignee added event emitted', {
     taskId: task.id,
-    assignee: assigneeName
+    assignee: assigneeInfo.name
   });
 }
 
@@ -409,11 +369,14 @@ async function handleAssigneeRemoved(task, historyItem, changedBy) {
   const member = findMemberById(removedAssignee.id) || findMemberByEmail(removedAssignee.email);
   const assigneeName = member?.name || removedAssignee.username;
 
-  const message = `🔄 تم إلغاء تكليف *${assigneeName}* من مهمة "${task.name}"`;
+  // Emit event for notification service
+  eventBus.emitEvent(EVENTS.TASK_UNASSIGNED, {
+    task,
+    assigneeName,
+    unassignedBy: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Assignee removed notification sent', {
+  logger.success('Assignee removed event emitted', {
     taskId: task.id,
     assignee: assigneeName
   });
@@ -429,9 +392,6 @@ async function handleStatusChanged(task, historyItem, changedBy) {
 
   if (isComplete) {
     // Task completed - process gamification
-    const aiWeight = task.ai_weight || 10;
-    const complexity = task.ai_complexity || 'medium';
-
     let userId = null;
     if (task.assignee_ids && task.assignee_ids.length > 0) {
       userId = typeof task.assignee_ids === 'string' ?
@@ -448,49 +408,31 @@ async function handleStatusChanged(task, historyItem, changedBy) {
       }
     }
 
-    let message = `✅ *مهمة مكتملة!*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
-    message += `*أكملها:* ${changedBy}\n`;
-    message += `*الوزن:* ${aiWeight} نقطة 💎 (${translateComplexity(complexity)})\n`;
+    // Emit event for notification service with gamification data
+    eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
+      task,
+      userName: changedBy,
+      gamificationResult
+    });
 
-    if (gamificationResult) {
-      message += `*النقاط المكتسبة:* ${gamificationResult.pointsEarned} نقطة 🎯\n`;
-
-      if (gamificationResult.newBadges && gamificationResult.newBadges.length > 0) {
-        message += `*أوسمة جديدة:* ${gamificationResult.newBadges.length} 🏆\n`;
-      }
-
-      if (gamificationResult.shieldUpgrade) {
-        message += `*ترقية درع:* ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
-      }
-    }
-
-    message += `\n🎉 رائع! استمر في الإنجاز!`;
-
-    await whatsappService.sendToGroup(message);
-
-    eventBus.emitEvent(EVENTS.TASK_COMPLETED, { task, userName: changedBy });
-
-    logger.success('Task completed notification sent', {
+    logger.success('Task completed event emitted', {
       taskId: task.id,
-      aiWeight,
+      aiWeight: task.ai_weight || 10,
       points: gamificationResult?.pointsEarned
     });
   } else {
     // Just status changed
-    const message = `🔄 *تغيير حالة المهمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
-      `*من:* ${beforeStatus}\n` +
-      `*إلى:* ${afterStatus}\n` +
-      `*بواسطة:* ${changedBy}`;
-
-    await whatsappService.sendToGroup(message);
-
     eventBus.emitEvent(EVENTS.TASK_STATUS_CHANGED, {
       task,
       beforeStatus,
       afterStatus,
       userName: changedBy
+    });
+
+    logger.success('Task status changed event emitted', {
+      taskId: task.id,
+      from: beforeStatus,
+      to: afterStatus
     });
   }
 }
@@ -502,24 +444,15 @@ async function handlePriorityChanged(task, historyItem, changedBy) {
   const beforePriority = historyItem?.before?.priority?.priority || 'عادية';
   const afterPriority = task.priority_label || historyItem?.after?.priority?.priority || 'عادية';
 
-  const priorityEmoji = {
-    'urgent': '🔴',
-    'high': '🟠',
-    'normal': '🟡',
-    'low': '🟢'
-  };
+  // Emit event for notification service
+  eventBus.emitEvent(EVENTS.TASK_PRIORITY_CHANGED, {
+    task,
+    beforePriority,
+    afterPriority,
+    userName: changedBy
+  });
 
-  const emoji = priorityEmoji[afterPriority.toLowerCase()] || '⚪';
-
-  const message = `${emoji} *تغيير أولوية المهمة*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*من:* ${beforePriority}\n` +
-    `*إلى:* ${afterPriority}\n` +
-    `*بواسطة:* ${changedBy}`;
-
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Priority changed notification sent', {
+  logger.success('Priority changed event emitted', {
     taskId: task.id,
     from: beforePriority,
     to: afterPriority
@@ -531,16 +464,15 @@ async function handlePriorityChanged(task, historyItem, changedBy) {
  */
 async function handleNameChanged(task, historyItem, changedBy) {
   const beforeName = historyItem?.before?.name || 'Unknown';
-  const afterName = task.name;
 
-  const message = `✏️ *تم تغيير اسم المهمة*\n\n` +
-    `*من:* ${beforeName}\n` +
-    `*إلى:* ${afterName}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_NAME_CHANGED, {
+    task,
+    beforeName,
+    afterName: task.name,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Name changed notification sent', { taskId: task.id });
+  logger.success('Name changed event emitted', { taskId: task.id });
 }
 
 /**
@@ -549,14 +481,13 @@ async function handleNameChanged(task, historyItem, changedBy) {
 async function handleTagAdded(task, historyItem, changedBy) {
   const newTag = historyItem?.after?.tag?.name || historyItem?.after?.tag;
 
-  const message = `🏷️ *تم إضافة وسم*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*الوسم:* ${newTag}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_TAG_ADDED, {
+    task,
+    tag: newTag,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Tag added notification sent', { taskId: task.id, tag: newTag });
+  logger.success('Tag added event emitted', { taskId: task.id, tag: newTag });
 }
 
 /**
@@ -565,14 +496,13 @@ async function handleTagAdded(task, historyItem, changedBy) {
 async function handleTagRemoved(task, historyItem, changedBy) {
   const removedTag = historyItem?.before?.tag?.name || historyItem?.before?.tag;
 
-  const message = `🏷️ *تم إزالة وسم*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*الوسم:* ${removedTag}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_TAG_REMOVED, {
+    task,
+    tag: removedTag,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Tag removed notification sent', { taskId: task.id, tag: removedTag });
+  logger.success('Tag removed event emitted', { taskId: task.id, tag: removedTag });
 }
 
 /**
@@ -582,54 +512,50 @@ async function handleCustomFieldChanged(task, historyItem, changedBy) {
   const fieldName = historyItem?.after?.custom_field?.name || 'Unknown field';
   const newValue = historyItem?.after?.custom_field?.value || 'N/A';
 
-  const message = `📊 *تم تحديث حقل مخصص*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*الحقل:* ${fieldName}\n` +
-    `*القيمة الجديدة:* ${newValue}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_CUSTOM_FIELD_CHANGED, {
+    task,
+    fieldName,
+    newValue,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Custom field changed notification sent', { taskId: task.id });
+  logger.success('Custom field changed event emitted', { taskId: task.id });
 }
 
 /**
  * Handle task type changed
  */
 async function handleTaskTypeChanged(task, historyItem, changedBy) {
-  const message = `🔄 *تم تغيير نوع المهمة*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_TYPE_CHANGED, {
+    task,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Task type changed notification sent', { taskId: task.id });
+  logger.success('Task type changed event emitted', { taskId: task.id });
 }
 
 /**
  * Handle task linked
  */
 async function handleTaskLinked(task, historyItem, changedBy) {
-  const message = `🔗 *تم ربط المهمة*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_LINKED, {
+    task,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Task linked notification sent', { taskId: task.id });
+  logger.success('Task linked event emitted', { taskId: task.id });
 }
 
 /**
  * Handle task unlinked
  */
 async function handleTaskUnlinked(task, historyItem, changedBy) {
-  const message = `🔓 *تم إلغاء ربط المهمة*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_UNLINKED, {
+    task,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Task unlinked notification sent', { taskId: task.id });
+  logger.success('Task unlinked event emitted', { taskId: task.id });
 }
 
 /**
@@ -639,33 +565,14 @@ async function handleDueDateChanged(task, historyItem, changedBy) {
   const beforeDate = historyItem?.before?.due_date;
   const afterDate = task.due_date || historyItem?.after?.due_date;
 
-  const beforeStr = beforeDate ? new Date(parseInt(beforeDate)).toLocaleDateString('ar-EG') : 'بدون موعد';
-  const afterStr = afterDate ? new Date(parseInt(afterDate)).toLocaleDateString('ar-EG') : 'بدون موعد';
+  eventBus.emitEvent(EVENTS.TASK_DUE_DATE_CHANGED, {
+    task,
+    beforeDate,
+    afterDate,
+    userName: changedBy
+  });
 
-  const daysUntil = afterDate ? Math.ceil((parseInt(afterDate) - Date.now()) / (1000 * 60 * 60 * 24)) : null;
-
-  let message = `📅 *تم تغيير الموعد النهائي*\n\n`;
-  message += `*المهمة:* ${task.name}\n`;
-  message += `*من:* ${beforeStr}\n`;
-  message += `*إلى:* ${afterStr}\n`;
-
-  if (daysUntil !== null) {
-    if (daysUntil < 0) {
-      message += `⚠️ *متأخر بـ ${Math.abs(daysUntil)} يوم!*\n`;
-    } else if (daysUntil === 0) {
-      message += `🔥 *اليوم هو الموعد النهائي!*\n`;
-    } else if (daysUntil <= 3) {
-      message += `⏰ *باقي ${daysUntil} أيام فقط!*\n`;
-    } else {
-      message += `*باقي ${daysUntil} يوم*\n`;
-    }
-  }
-
-  message += `*بواسطة:* ${changedBy}`;
-
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Due date changed notification sent', { taskId: task.id });
+  logger.success('Due date changed event emitted', { taskId: task.id });
 }
 
 /**
@@ -673,62 +580,39 @@ async function handleDueDateChanged(task, historyItem, changedBy) {
  */
 async function handleStartDateChanged(task, historyItem, changedBy) {
   const afterDate = task.start_date || historyItem?.after?.start_date;
-  const afterStr = afterDate ? new Date(parseInt(afterDate)).toLocaleDateString('ar-EG') : 'بدون تاريخ';
 
-  const message = `📅 *تم تغيير تاريخ البدء*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*تاريخ البدء:* ${afterStr}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_START_DATE_CHANGED, {
+    task,
+    startDate: afterDate,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Start date changed notification sent', { taskId: task.id });
+  logger.success('Start date changed event emitted', { taskId: task.id });
 }
 
 /**
  * Handle due date arrives (reminder)
  */
 async function handleDueDateArrives(task) {
-  const aiWeight = task.ai_weight || 10;
-
-  let message = `⏰ *تذكير: الموعد النهائي اليوم!*\n\n`;
-  message += `*المهمة:* ${task.name}\n`;
-  message += `*الوزن:* ${aiWeight} نقطة 💎\n`;
-  message += `*الحالة:* ${task.status_name}\n`;
-
   const assignees = getAssigneesWithInfo(task);
-  if (assignees.length > 0) {
-    message += `*المكلفون:* ${assignees.map(a => a.name).join(', ')}\n`;
-  }
 
-  message += `\n🔗 ${task.url}\n`;
-  message += `\n⚡ أنجزها اليوم!`;
+  eventBus.emitEvent(EVENTS.TASK_DUE_DATE_REMINDER, {
+    task,
+    assignees
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  // Send to assignees
-  for (const assignee of assignees) {
-    if (assignee.phone) {
-      await whatsappService.sendToUser(assignee.phone, message);
-    }
-  }
-
-  logger.success('Due date arrives notification sent', { taskId: task.id });
+  logger.success('Due date reminder event emitted', { taskId: task.id });
 }
 
 /**
  * Handle start date arrives
  */
 async function handleStartDateArrives(task) {
-  const message = `🚀 *حان وقت البدء!*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*الوزن:* ${task.ai_weight || 10} نقطة 💎\n` +
-    `\n🔗 ${task.url}\n` +
-    `\nابدأ الآن! 💪`;
+  eventBus.emitEvent(EVENTS.TASK_START_DATE_REMINDER, {
+    task
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Start date arrives notification sent', { taskId: task.id });
+  logger.success('Start date reminder event emitted', { taskId: task.id });
 }
 
 /**
@@ -736,77 +620,65 @@ async function handleStartDateArrives(task) {
  */
 async function handleTimeTracked(task, historyItem, changedBy) {
   const timeMs = historyItem?.after?.time || historyItem?.after?.time_estimate;
-  const timeHours = timeMs ? (timeMs / (1000 * 60 * 60)).toFixed(1) : '0';
 
-  const message = `⏱️ *تم تسجيل وقت*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*الوقت:* ${timeHours} ساعة\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_TIME_TRACKED, {
+    task,
+    timeMs,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Time tracked notification sent', { taskId: task.id, hours: timeHours });
+  logger.success('Time tracked event emitted', { taskId: task.id });
 }
 
 /**
  * Handle checklist item resolved
  */
 async function handleChecklistItemResolved(task, historyItem, changedBy) {
-  const progress = task.checklist_total > 0 ?
-    Math.round((task.checklist_resolved / task.checklist_total) * 100) : 0;
+  eventBus.emitEvent(EVENTS.TASK_CHECKLIST_ITEM_RESOLVED, {
+    task,
+    resolved: task.checklist_resolved,
+    total: task.checklist_total,
+    userName: changedBy
+  });
 
-  const message = `☑️ *تم إتمام عنصر في القائمة*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*التقدم:* ${task.checklist_resolved}/${task.checklist_total} (${progress}%)\n` +
-    `*بواسطة:* ${changedBy}`;
-
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Checklist item resolved notification sent', { taskId: task.id, progress });
+  logger.success('Checklist item resolved event emitted', { taskId: task.id });
 }
 
 /**
  * Handle all checklists resolved
  */
 async function handleAllChecklistsResolved(task, changedBy) {
-  const message = `🎉 *تم إكمال جميع عناصر القائمة!*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*العناصر:* ${task.checklist_resolved}/${task.checklist_total}\n` +
-    `*بواسطة:* ${changedBy}\n\n` +
-    `رائع! الآن يمكنك إغلاق المهمة! ✨`;
+  eventBus.emitEvent(EVENTS.TASK_ALL_CHECKLISTS_RESOLVED, {
+    task,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('All checklists resolved notification sent', { taskId: task.id });
+  logger.success('All checklists resolved event emitted', { taskId: task.id });
 }
 
 /**
  * Handle subtask created
  */
 async function handleSubtaskCreated(task, body, changedBy) {
-  const message = `📌 *تم إضافة مهمة فرعية*\n\n` +
-    `*المهمة الرئيسية:* ${task.name}\n` +
-    `*عدد المهام الفرعية:* ${task.subtasks_total}\n` +
-    `*بواسطة:* ${changedBy}`;
+  eventBus.emitEvent(EVENTS.TASK_SUBTASK_CREATED, {
+    task,
+    subtasksTotal: task.subtasks_total,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Subtask created notification sent', { taskId: task.id });
+  logger.success('Subtask created event emitted', { taskId: task.id });
 }
 
 /**
  * Handle all subtasks resolved
  */
 async function handleAllSubtasksResolved(task, changedBy) {
-  const message = `🎊 *تم إكمال جميع المهام الفرعية!*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*المهام الفرعية:* ${task.subtasks_resolved}/${task.subtasks_total}\n` +
-    `*بواسطة:* ${changedBy}\n\n` +
-    `إنجاز ممتاز! 🏆`;
+  eventBus.emitEvent(EVENTS.TASK_ALL_SUBTASKS_RESOLVED, {
+    task,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('All subtasks resolved notification sent', { taskId: task.id });
+  logger.success('All subtasks resolved event emitted', { taskId: task.id });
 }
 
 /**
@@ -814,16 +686,14 @@ async function handleAllSubtasksResolved(task, changedBy) {
  */
 async function handleCommentPosted(task, body, changedBy) {
   const commentText = body.comment?.text || body.history_items?.[0]?.comment?.text || '';
-  const preview = commentText.length > 100 ? commentText.substring(0, 100) + '...' : commentText;
 
-  const message = `💬 *تعليق جديد*\n\n` +
-    `*المهمة:* ${task.name}\n` +
-    `*من:* ${changedBy}\n` +
-    `*التعليق:* ${preview}`;
+  eventBus.emitEvent(EVENTS.TASK_COMMENT_POSTED, {
+    task,
+    commentText,
+    userName: changedBy
+  });
 
-  await whatsappService.sendToGroup(message);
-
-  logger.success('Comment posted notification sent', { taskId: task.id });
+  logger.success('Comment posted event emitted', { taskId: task.id });
 }
 
 // ==================== UTILITY FUNCTIONS ====================

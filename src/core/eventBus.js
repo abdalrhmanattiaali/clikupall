@@ -72,13 +72,40 @@ class EventBus extends EventEmitter {
 
 // Event names constants
 export const EVENTS = {
-  // Task Events
+  // Task Management Events
   TASK_CREATED: 'task:created',
   TASK_UPDATED: 'task:updated',
   TASK_COMPLETED: 'task:completed',
   TASK_ASSIGNED: 'task:assigned',
+  TASK_UNASSIGNED: 'task:unassigned',
   TASK_STATUS_CHANGED: 'task:status_changed',
-  TASK_COMMENT_ADDED: 'task:comment_added',
+  TASK_PRIORITY_CHANGED: 'task:priority_changed',
+  TASK_NAME_CHANGED: 'task:name_changed',
+  TASK_TAG_ADDED: 'task:tag_added',
+  TASK_TAG_REMOVED: 'task:tag_removed',
+  TASK_CUSTOM_FIELD_CHANGED: 'task:custom_field_changed',
+  TASK_TYPE_CHANGED: 'task:type_changed',
+  TASK_LINKED: 'task:linked',
+  TASK_UNLINKED: 'task:unlinked',
+
+  // Date & Time Events
+  TASK_DUE_DATE_CHANGED: 'task:due_date_changed',
+  TASK_START_DATE_CHANGED: 'task:start_date_changed',
+  TASK_DUE_DATE_REMINDER: 'task:due_date_reminder',
+  TASK_START_DATE_REMINDER: 'task:start_date_reminder',
+  TASK_TIME_TRACKED: 'task:time_tracked',
+
+  // Checklist Events
+  TASK_CHECKLIST_ITEM_RESOLVED: 'task:checklist_item_resolved',
+  TASK_ALL_CHECKLISTS_RESOLVED: 'task:all_checklists_resolved',
+
+  // Subtask Events
+  TASK_SUBTASK_CREATED: 'task:subtask_created',
+  TASK_ALL_SUBTASKS_RESOLVED: 'task:all_subtasks_resolved',
+
+  // Comment Events
+  TASK_COMMENT_POSTED: 'task:comment_posted',
+  TASK_COMMENT_ADDED: 'task:comment_added', // Legacy alias
 
   // Notification Events
   NOTIFICATION_QUEUED: 'notification:queued',

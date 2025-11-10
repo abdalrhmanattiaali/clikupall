@@ -128,7 +128,7 @@ class Application {
     try {
       // Database Service
       logger.info('Initializing database service...');
-      databaseService.initialize();
+      await databaseService.initialize();
       logger.success('Database Service ready');
 
       // AI Service (already initialized in import)

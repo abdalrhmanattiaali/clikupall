@@ -74,12 +74,38 @@ const TRIGGER_CATEGORIES = {
  */
 export async function handleWebhook(req, res) {
   try {
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    // Parse body - handle Buffer, string, or object
+    let body;
+    if (Buffer.isBuffer(req.body)) {
+      body = JSON.parse(req.body.toString('utf8'));
+    } else if (typeof req.body === 'string') {
+      body = JSON.parse(req.body);
+    } else {
+      body = req.body;
+    }
+
+    // Handle ClickUp test ping
+    if (body.body && body.body.includes('Test message')) {
+      logger.info('Received ClickUp webhook test ping');
+      return res.status(200).json({ success: true, message: 'Webhook endpoint is working!' });
+    }
+
+    // Handle ClickUp webhook challenge (initial setup)
+    if (body.challenge) {
+      logger.info('Received ClickUp webhook challenge');
+      return res.status(200).json({ challenge: body.challenge });
+    }
+
     const event = body.event;
     const taskId = body.task_id;
 
     if (!event || !taskId) {
-      logger.warn('Webhook missing event or task_id', { body });
+      logger.warn('Webhook missing event or task_id', {
+        hasEvent: !!event,
+        hasTaskId: !!taskId,
+        bodyKeys: Object.keys(body),
+        bodyPreview: JSON.stringify(body).substring(0, 200)
+      });
       return res.status(400).json({ error: 'Missing event or task_id' });
     }
 
@@ -108,18 +134,38 @@ export async function handleWebhook(req, res) {
       raw_payload: JSON.stringify(body)
     };
 
-    databaseService.insertEvent(eventData);
+    // Store event in database (async for file database)
+    if (databaseService.insertEvent) {
+      try {
+        await databaseService.insertEvent(eventData);
+      } catch (dbError) {
+        logger.warn('Failed to store event in database', {
+          error: dbError.message,
+          event_id: eventData.event_id
+        });
+      }
+    }
 
     // Route to specific handler
-    await routeToHandler(event, body, task);
+    try {
+      await routeToHandler(event, body, task);
+    } catch (handlerError) {
+      logger.error('Event handler failed', {
+        event,
+        error: handlerError.message,
+        stack: handlerError.stack
+      });
+      // Continue anyway - don't fail the webhook
+    }
 
     res.status(200).json({ success: true, event, taskId });
   } catch (error) {
     logger.error('Webhook handling error', {
       error: error.message,
-      stack: error.stack
+      stack: error.stack,
+      body: req.body ? JSON.stringify(req.body).substring(0, 500) : 'no body'
     });
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 }
 

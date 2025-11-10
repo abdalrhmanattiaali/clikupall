@@ -5,7 +5,7 @@
 
 import aiService from './index.js';
 import databaseService from '../../database/index.js';
-import logger from '../../utils/logger.js';
+import logger from '../../core/logger.js';
 import { TEAM } from '../../config/env.js';
 
 class BehavioralService {

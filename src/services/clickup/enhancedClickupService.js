@@ -5,7 +5,7 @@
 
 import axios from 'axios';
 import { CLICKUP_API_KEY, CLICKUP_TEAM_ID } from '../../config/env.js';
-import logger from '../../utils/logger.js';
+import logger from '../../core/logger.js';
 import databaseService from '../../database/index.js';
 
 class EnhancedClickUpService {

@@ -208,22 +208,27 @@ class EnhancedNotificationService {
       assignedBy
     });
 
+    // Add to batch queue for group (not immediate to avoid duplicates)
+    this.addToQueue({
+      type: 'task_assigned',
+      task,
+      message: null, // Will build in batch
+      data: { assignees, assignedBy }
+    });
+
+    // Send DM to newly assigned users
     for (const assignee of assignees) {
-      const message = await this.buildTaskAssignedMessage(task, assignee, assignedBy);
-
-      // Send to group
-      const groupMessage = `📢 تم تكليف *${assignee.name}* بمهمة "${task.name}" (${task.ai_weight || 10} نقطة)`;
-      await this.sendImmediateNotification(groupMessage, 'group');
-
-      // Send to assignee privately
       if (assignee.phone) {
-        await this.sendImmediateNotification(message, 'user', assignee.phone);
+        const dmMessage = await this.buildTaskAssignedDM(task, assignee);
+        await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
       }
     }
 
-    logger.success('Task assigned notifications processed', {
+    logger.success('Task assignment notifications queued', {
       taskId: task.id,
-      assigneeCount: assignees.length
+      assigneeCount: assignees.length,
+      queuedForGroup: true,
+      sentDMs: assignees.filter(a => a.phone).length
     });
   }
 
@@ -933,75 +938,150 @@ class EnhancedNotificationService {
       }
     });
 
-    // Build organized message
-    let finalMessage = `📊 *التحديثات (${batch.length})*\n`;
-    finalMessage += `━━━━━━━━━━━━━━━━━━━\n\n`;
+    // Build beautiful organized message
+    let finalMessage = `✨ *ملخص التحديثات الأخيرة*\n`;
+    finalMessage += `━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    // Completed tasks (most important)
+    // Completed tasks (most important - show first)
     if (byType.task_completed.length > 0) {
-      finalMessage += `🎉 *مهام مكتملة (${byType.task_completed.length}):*\n`;
+      finalMessage += `🎉 *مهام مكتملة (${byType.task_completed.length}):*\n\n`;
       byType.task_completed.forEach((item, i) => {
         if (i < 5) { // Limit to 5
           const userName = item.data?.userName || 'Unknown';
           const points = item.data?.gamificationResult?.pointsEarned || 0;
-          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
-          finalMessage += `     👤 ${userName} | 🎯 ${points} نقطة\n`;
+          const badges = item.data?.gamificationResult?.newBadges?.length || 0;
+          const weight = item.task.ai_weight || 10;
+
+          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `     ✅ أكملها: ${userName}\n`;
+          finalMessage += `     💎 ${weight} نقطة • 🎯 كسب ${points} نقطة`;
+          if (badges > 0) {
+            finalMessage += ` • 🏆 ${badges} وسام`;
+          }
+          finalMessage += `\n\n`;
         }
       });
       if (byType.task_completed.length > 5) {
-        finalMessage += `     ... و ${byType.task_completed.length - 5} أخرى\n`;
+        finalMessage += `     ✨ ... و ${byType.task_completed.length - 5} مهمة أخرى\n\n`;
       }
-      finalMessage += `\n`;
     }
 
     // New tasks
     if (byType.task_created.length > 0) {
-      finalMessage += `📝 *مهام جديدة (${byType.task_created.length}):*\n`;
+      finalMessage += `📝 *مهام جديدة (${byType.task_created.length}):*\n\n`;
       byType.task_created.forEach((item, i) => {
         if (i < 5) {
-          const assignees = item.data?.assignees?.map(a => a.name).join(', ') || 'غير مسندة';
-          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
-          finalMessage += `     👥 ${assignees}\n`;
+          const assignees = item.data?.assignees || [];
+          const weight = item.task.ai_weight || 10;
+          const priority = item.task.priority_label || 'عادية';
+          const complexity = item.task.ai_complexity || 'medium';
+          const complexityAr = this.translateComplexity(complexity);
+
+          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+
+          if (assignees.length > 0) {
+            const names = assignees.map(a => a.name).join('، ');
+            finalMessage += `     👥 المكلفون: ${names}\n`;
+          } else {
+            finalMessage += `     👥 غير مسندة\n`;
+          }
+
+          finalMessage += `     🔸 ${priority} • 💎 ${weight} نقطة • ${complexityAr}\n\n`;
         }
       });
       if (byType.task_created.length > 5) {
-        finalMessage += `     ... و ${byType.task_created.length - 5} أخرى\n`;
+        finalMessage += `     ✨ ... و ${byType.task_created.length - 5} مهمة أخرى\n\n`;
       }
-      finalMessage += `\n`;
+    }
+
+    // Assigned tasks (when someone is assigned to existing task)
+    if (byType.task_assigned.length > 0) {
+      finalMessage += `👤 *تكليفات جديدة (${byType.task_assigned.length}):*\n\n`;
+      byType.task_assigned.forEach((item, i) => {
+        if (i < 5) {
+          const assignees = item.data?.assignees || [];
+          const weight = item.task.ai_weight || 10;
+          const assignedBy = item.data?.assignedBy || 'Unknown';
+
+          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+
+          if (assignees.length > 0) {
+            const names = assignees.map(a => a.name).join('، ');
+            finalMessage += `     👥 تم تكليف: ${names}\n`;
+          }
+
+          finalMessage += `     📌 بواسطة: ${assignedBy} • 💎 ${weight} نقطة\n\n`;
+        }
+      });
+      if (byType.task_assigned.length > 5) {
+        finalMessage += `     ✨ ... و ${byType.task_assigned.length - 5} تكليف آخر\n\n`;
+      }
     }
 
     // Status changes
     if (byType.status_changed.length > 0) {
-      finalMessage += `🔄 *تغييرات الحالة (${byType.status_changed.length}):*\n`;
+      finalMessage += `🔄 *تغييرات الحالة (${byType.status_changed.length}):*\n\n`;
       byType.status_changed.forEach((item, i) => {
+        if (i < 5) {
+          const data = item.data || {};
+          const userName = data.userName || 'Unknown';
+
+          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `     ${data.beforeStatus} ➜ ${data.afterStatus}\n`;
+          finalMessage += `     👤 ${userName}\n\n`;
+        }
+      });
+      if (byType.status_changed.length > 5) {
+        finalMessage += `     ✨ ... و ${byType.status_changed.length - 5} تغيير آخر\n\n`;
+      }
+    }
+
+    // Priority changes
+    if (byType.priority_changed.length > 0) {
+      finalMessage += `🔴 *تغييرات الأولوية (${byType.priority_changed.length}):*\n\n`;
+      byType.priority_changed.forEach((item, i) => {
         if (i < 3) {
           const data = item.data || {};
-          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
-          finalMessage += `     ${data.beforeStatus} → ${data.afterStatus}\n`;
+          const userName = data.userName || 'Unknown';
+
+          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `     ${data.beforePriority} ➜ ${data.afterPriority}\n`;
+          finalMessage += `     👤 ${userName}\n\n`;
         }
       });
-      if (byType.status_changed.length > 3) {
-        finalMessage += `     ... و ${byType.status_changed.length - 3} أخرى\n`;
+      if (byType.priority_changed.length > 3) {
+        finalMessage += `     ✨ ... و ${byType.priority_changed.length - 3} تغيير آخر\n\n`;
       }
-      finalMessage += `\n`;
     }
 
-    // Assigned tasks
-    if (byType.task_assigned.length > 0) {
-      finalMessage += `👤 *تكليفات جديدة (${byType.task_assigned.length}):*\n`;
-      byType.task_assigned.forEach((item, i) => {
+    // Other updates
+    if (byType.other.length > 0) {
+      finalMessage += `📌 *تحديثات أخرى (${byType.other.length}):*\n\n`;
+      byType.other.forEach((item, i) => {
         if (i < 3) {
-          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
+          finalMessage += `  ${i + 1}️⃣ ${item.task.name}\n`;
+          if (item.message) {
+            // Show first line of message only
+            const firstLine = item.message.split('\n')[0];
+            finalMessage += `     ${firstLine}\n\n`;
+          } else {
+            finalMessage += `\n`;
+          }
         }
       });
-      if (byType.task_assigned.length > 3) {
-        finalMessage += `     ... و ${byType.task_assigned.length - 3} أخرى\n`;
+      if (byType.other.length > 3) {
+        finalMessage += `     ✨ ... و ${byType.other.length - 3} تحديث آخر\n\n`;
       }
-      finalMessage += `\n`;
     }
 
-    finalMessage += `━━━━━━━━━━━━━━━━━━━\n`;
+    finalMessage += `━━━━━━━━━━━━━━━━━━━━\n`;
     finalMessage += `⏱️ آخر ${Math.round(this.batchDelay / 1000)} ثانية`;
+
+    // Add summary count at the end
+    const totalUpdates = Object.values(byType).reduce((sum, arr) => sum + arr.length, 0);
+    if (totalUpdates > 10) {
+      finalMessage += `\n💡 إجمالي ${totalUpdates} تحديث`;
+    }
 
     // Send to group
     try {

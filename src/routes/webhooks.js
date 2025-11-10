@@ -5,25 +5,27 @@
 
 import express from 'express';
 import * as webhookController from '../controllers/webhookController.js';
+import enhancedWebhookController from '../controllers/enhancedWebhookController.js';
 
 const router = express.Router();
 
 /**
- * POST /webhooks/task-created
- * ClickUp webhook for task creation
+ * POST /webhooks/clickup
+ * Universal ClickUp webhook handler for ALL events (20+ events)
+ * Use this endpoint for all ClickUp webhooks
+ *
+ * Supported events:
+ * - Task Management: created, updated, deleted, assignee add/remove, status, priority, etc.
+ * - Dates & Time: due date, start date, time tracked
+ * - Checklists: item resolved, all resolved
+ * - Subtasks: created, all resolved
+ * - Comments: posted, updated
  */
+router.post('/clickup', enhancedWebhookController.handleWebhook);
+
+// Legacy endpoints (backward compatibility)
 router.post('/task-created', webhookController.handleTaskCreated);
-
-/**
- * POST /webhooks/task-updated
- * ClickUp webhook for task updates
- */
 router.post('/task-updated', webhookController.handleTaskUpdated);
-
-/**
- * POST /webhooks/task-comment
- * ClickUp webhook for new comments
- */
 router.post('/task-comment', webhookController.handleTaskComment);
 
 /**

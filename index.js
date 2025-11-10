@@ -13,6 +13,7 @@ import aiService from './src/services/ai/index.js';
 import whatsappService from './src/services/whatsapp/whatsappService.js';
 import notificationService from './src/services/notification/notificationService.js';
 import schedulerService from './src/services/scheduler/schedulerService.js';
+import databaseService from './src/database/index.js';
 
 // Routes
 import webhookRoutes from './src/routes/webhooks.js';
@@ -125,6 +126,11 @@ class Application {
     logger.info('Initializing services...');
 
     try {
+      // Database Service
+      logger.info('Initializing database service...');
+      databaseService.initialize();
+      logger.success('Database Service ready');
+
       // AI Service (already initialized in import)
       logger.success(`AI Service ready (${aiService.getProviderName()})`);
 

@@ -13,6 +13,7 @@ import aiService from '../ai/index.js';
 import motivationService from '../motivation/motivationService.js';
 import gamificationService from '../gamification/gamificationService.js';
 import leaderboardService from '../gamification/leaderboardService.js';
+import behavioralService from '../ai/behavioralService.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import { TEAM } from '../../config/team.js';
 import { TASK_STATUS } from '../../config/constants.js';
@@ -66,6 +67,17 @@ class SchedulerService {
       '0 20 * * *',
       'Evening Motivation',
       () => motivationService.sendMotivationalMessage('evening')
+    );
+
+    // ============================================
+    // 🧠 AI Behavioral Recommendations
+    // ============================================
+
+    // 08:30 - Morning AI Task Recommendations
+    this.scheduleJob(
+      '30 7 * * *',
+      'Morning Task Recommendations',
+      () => this.sendMorningRecommendations()
     );
 
     // ============================================
@@ -583,6 +595,106 @@ class SchedulerService {
     });
 
     this.jobs = [];
+  }
+
+  /**
+   * Send AI-powered morning task recommendations to all team members
+   * Analyzes each user's tasks and suggests optimal tasks to start with
+   */
+  async sendMorningRecommendations() {
+    if (!whatsappService.isClientReady()) {
+      logger.warn('WhatsApp not ready, skipping morning recommendations');
+      return;
+    }
+
+    logger.info('Sending morning AI task recommendations to all team members');
+
+    for (let i = 0; i < TEAM.length; i++) {
+      const member = TEAM[i];
+
+      try {
+        // Generate AI recommendations
+        const recommendations = await behavioralService.generateMorningRecommendations(member.id);
+
+        if (recommendations && recommendations.tasks && recommendations.tasks.length > 0) {
+          // Format message
+          let message = `${recommendations.greeting || '🌅 صباح الخير!'}\n\n`;
+          message += `${recommendations.analysis || ''}\n\n`;
+
+          if (recommendations.work_style_note) {
+            message += `💡 ${recommendations.work_style_note}\n\n`;
+          }
+
+          message += `*📋 مهامك الموصى بها اليوم:*\n\n`;
+
+          for (let j = 0; j < Math.min(recommendations.tasks.length, 5); j++) {
+            const task = recommendations.tasks[j];
+            const icon = this.getTaskTypeIcon(task.type);
+
+            message += `${j + 1}. ${icon} *${task.task_name}*\n`;
+            message += `   ⏱️ ${task.estimated_time}\n`;
+            message += `   💎 ${task.ai_weight} نقطة (${this.translateComplexity(task.complexity)})\n`;
+            message += `   💭 ${task.reason}\n\n`;
+          }
+
+          if (recommendations.motivation) {
+            message += `\n✨ ${recommendations.motivation}`;
+          }
+
+          // Send to user privately
+          await whatsappService.sendToUser(member.phone, message);
+
+          logger.info(`Morning recommendations sent to ${member.name}`, {
+            tasks: recommendations.tasks.length
+          });
+        } else {
+          // No tasks - send motivational message
+          const message = `🌅 *صباح الخير ${member.name}!*\n\n` +
+            `🎉 لا توجد مهام مفتوحة! استمتع بيومك! ✨`;
+
+          await whatsappService.sendToUser(member.phone, message);
+        }
+
+        // Delay between messages
+        if (i < TEAM.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      } catch (error) {
+        logger.error(`Failed to send morning recommendations to ${member.name}`, {
+          error: error.message
+        });
+      }
+    }
+
+    logger.success('Morning recommendations completed');
+  }
+
+  /**
+   * Get emoji icon for task type
+   */
+  getTaskTypeIcon(type) {
+    const icons = {
+      'quick_win': '⚡',
+      'focus_task': '🎯',
+      'morning_priority': '🌅',
+      'afternoon_task': '🌤️',
+      'urgent': '🔥',
+      'important': '⭐'
+    };
+    return icons[type] || '📝';
+  }
+
+  /**
+   * Translate complexity to Arabic
+   */
+  translateComplexity(complexity) {
+    const translations = {
+      'simple': 'بسيطة',
+      'medium': 'متوسطة',
+      'complex': 'معقدة',
+      'very_complex': 'معقدة جداً'
+    };
+    return translations[complexity] || 'متوسطة';
   }
 
   /**

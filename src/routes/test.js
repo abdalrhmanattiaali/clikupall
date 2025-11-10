@@ -18,6 +18,10 @@ import achievementRepo from '../repositories/achievementRepository.js';
 import { TEAM, findMemberByName, findMemberById } from '../config/team.js';
 import { ALL_BADGES } from '../config/badges.js';
 import { SHIELD_LEVELS } from '../config/shields.js';
+import databaseService from '../database/index.js';
+import enhancedClickUpService from '../services/clickup/enhancedClickupService.js';
+import taskWeightingService from '../services/ai/taskWeightingService.js';
+import behavioralService from '../services/ai/behavioralService.js';
 
 const router = express.Router();
 
@@ -571,6 +575,234 @@ router.post('/simulate-task-complete', async (req, res) => {
     });
   } catch (error) {
     logger.error('Failed to simulate task', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==================== NEW AI & DATABASE ENDPOINTS ====================
+
+/**
+ * GET /test/db-stats
+ * Get database statistics
+ */
+router.get('/db-stats', (req, res) => {
+  try {
+    const stats = databaseService.getStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/sync-task/:taskId
+ * Fetch and store complete task data from ClickUp
+ */
+router.post('/sync-task/:taskId', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
+
+    res.json({
+      success: true,
+      task,
+      message: 'Task synced to database successfully'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/analyze-task/:taskId
+ * Calculate AI weight for a task
+ */
+router.post('/analyze-task/:taskId', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+
+    // Get task from database or fetch from API
+    let task = databaseService.getTask(taskId);
+    if (!task) {
+      task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
+    }
+
+    // Calculate AI weight
+    const analysis = await taskWeightingService.calculateTaskWeight(task);
+
+    res.json({
+      success: true,
+      task_id: taskId,
+      task_name: task.name,
+      analysis
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/task/:taskId
+ * Get complete task data from database
+ */
+router.get('/task/:taskId', (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const task = databaseService.getTask(taskId);
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        error: 'Task not found in database'
+      });
+    }
+
+    res.json({ success: true, task });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/user-tasks/:userId
+ * Get all tasks for a user
+ */
+router.get('/user-tasks/:userId', (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { status, priority } = req.query;
+
+    const tasks = databaseService.getUserTasks(userId, {
+      status,
+      priority
+    });
+
+    res.json({
+      success: true,
+      user_id: userId,
+      count: tasks.length,
+      tasks
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/morning-recommendations/:userId
+ * Generate morning task recommendations for a user
+ */
+router.post('/morning-recommendations/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const recommendations = await behavioralService.generateMorningRecommendations(parseInt(userId));
+
+    res.json({
+      success: true,
+      user_id: userId,
+      recommendations
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/analyze-behavior/:userId
+ * Analyze user behavior and work patterns
+ */
+router.post('/analyze-behavior/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const behavior = await behavioralService.analyzeUserBehavior(parseInt(userId));
+
+    res.json({
+      success: true,
+      user_id: userId,
+      behavior
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/user-behavior/:userId
+ * Get stored user behavior data
+ */
+router.get('/user-behavior/:userId', (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const behavior = databaseService.getUserBehavior(userId);
+
+    if (!behavior) {
+      return res.status(404).json({
+        success: false,
+        error: 'No behavior data found for this user'
+      });
+    }
+
+    res.json({ success: true, user_id: userId, behavior });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/task-events/:taskId
+ * Get all events for a task
+ */
+router.get('/task-events/:taskId', (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { limit } = req.query;
+
+    const events = databaseService.getTaskEvents(taskId, limit ? parseInt(limit) : 50);
+
+    res.json({
+      success: true,
+      task_id: taskId,
+      count: events.length,
+      events
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/send-recommendations
+ * Trigger morning recommendations for all users
+ */
+router.post('/send-recommendations', async (req, res) => {
+  try {
+    await schedulerService.sendMorningRecommendations();
+    res.json({
+      success: true,
+      message: 'Morning recommendations sent to all team members'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/sync-all-tasks
+ * Sync all tasks from ClickUp to database (WARNING: May take time)
+ */
+router.post('/sync-all-tasks', async (req, res) => {
+  try {
+    const result = await enhancedClickUpService.syncAllTasks();
+
+    res.json({
+      success: true,
+      ...result,
+      message: 'All tasks synced successfully'
+    });
+  } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
 });

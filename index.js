@@ -10,6 +10,13 @@ import eventBus, { EVENTS } from './src/core/eventBus.js';
 
 // Services
 import aiService from './src/services/ai/index.js';
+import whatsappService from './src/services/whatsapp/whatsappService.js';
+import notificationService from './src/services/notification/notificationService.js';
+import schedulerService from './src/services/scheduler/schedulerService.js';
+
+// Routes
+import webhookRoutes from './src/routes/webhooks.js';
+import testRoutes from './src/routes/test.js';
 
 /**
  * Main Application Class
@@ -39,7 +46,7 @@ class Application {
       await this.initializeServices();
 
       // Setup routes
-      await this.setupRoutes();
+      this.setupRoutes();
 
       // Setup event listeners
       this.setupEventListeners();
@@ -76,6 +83,11 @@ class Application {
     logger.info(`  PORT: ${env.PORT}`);
     logger.info(`  TZ: ${env.TZ}`);
     logger.info(`  AI Provider: ${env.ai.provider}`);
+    logger.info('Feature Toggles:');
+    logger.info(`  AI Notifications: ${env.features.aiNotifications}`);
+    logger.info(`  Daily Reports: ${env.features.dailyReports}`);
+    logger.info(`  Weekly Challenges: ${env.features.weeklyChallenges}`);
+    logger.info(`  Badges: ${env.features.badges}`);
   }
 
   /**
@@ -83,20 +95,23 @@ class Application {
    */
   setupExpress() {
     // Parse raw JSON bodies for webhooks
-    this.app.use(express.raw({ type: 'application/json' }));
+    this.app.use(express.raw({ type: 'application/json', limit: '10mb' }));
 
     // Parse JSON bodies for API endpoints
-    this.app.use(express.json());
+    this.app.use(express.json({ limit: '10mb' }));
 
     // Parse URL-encoded bodies
-    this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
     // Static files
     this.app.use(express.static('public'));
 
     // Request logging middleware
     this.app.use((req, res, next) => {
-      logger.debug(`${req.method} ${req.path}`);
+      logger.debug(`${req.method} ${req.path}`, {
+        ip: req.ip,
+        userAgent: req.get('user-agent')?.substring(0, 50)
+      });
       next();
     });
 
@@ -115,20 +130,21 @@ class Application {
 
       // WhatsApp Service
       logger.info('Initializing WhatsApp service...');
-      // TODO: Import and initialize when created
-      // const whatsappService = await import('./src/services/whatsapp/whatsappService.js');
-      // await whatsappService.default.initialize();
+      await whatsappService.initialize();
+
+      // Notification Service (already initialized in import)
+      logger.success('Notification Service ready');
 
       // Scheduler Service
       logger.info('Initializing scheduler service...');
-      // TODO: Import and initialize when created
-      // const schedulerService = await import('./src/services/scheduler/schedulerService.js');
-      // schedulerService.default.initialize();
+      schedulerService.initialize();
+      logger.success('Scheduler Service ready');
 
       logger.success('All services initialized');
     } catch (error) {
       logger.error('Service initialization failed', {
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
       throw error;
     }
@@ -137,7 +153,7 @@ class Application {
   /**
    * Setup application routes
    */
-  async setupRoutes() {
+  setupRoutes() {
     logger.info('Setting up routes...');
 
     // Health check
@@ -146,31 +162,81 @@ class Application {
         status: 'ok',
         timestamp: Date.now(),
         uptime: process.uptime(),
-        aiProvider: aiService.getProviderName()
+        aiProvider: aiService.getProviderName(),
+        whatsappReady: whatsappService.isClientReady(),
+        notificationQueue: notificationService.getStatus()
       });
     });
 
-    // TODO: Import and register route modules when created
-    // const webhookRoutes = await import('./src/routes/webhooks.js');
-    // const dashboardRoutes = await import('./src/routes/dashboard.js');
-    // const testRoutes = await import('./src/routes/test.js');
-    //
-    // this.app.use('/webhooks', webhookRoutes.default);
-    // this.app.use('/dashboard', dashboardRoutes.default);
-    // this.app.use('/test', testRoutes.default);
-
-    // Temporary basic routes for testing
+    // Home page
     this.app.get('/', (req, res) => {
       res.send(`
-        <h1>ClickUp All - Task Management System</h1>
-        <p>Status: Running</p>
-        <p>AI Provider: ${aiService.getProviderName()}</p>
-        <p>Version: 4.0.0</p>
-        <ul>
-          <li><a href="/health">Health Check</a></li>
-        </ul>
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>ClickUp All - نظام إدارة المهام</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; background: #f5f5f5; }
+            .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            h1 { color: #333; border-bottom: 3px solid #7b2cbf; padding-bottom: 10px; }
+            .status { display: inline-block; padding: 5px 15px; border-radius: 20px; margin: 5px; font-size: 14px; }
+            .status.success { background: #d4edda; color: #155724; }
+            .status.warning { background: #fff3cd; color: #856404; }
+            ul { list-style: none; padding: 0; }
+            li { padding: 10px; margin: 5px 0; background: #f8f9fa; border-radius: 5px; }
+            a { color: #7b2cbf; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>🚀 ClickUp All - نظام إدارة المهام</h1>
+
+            <h3>📊 حالة النظام</h3>
+            <div>
+              <span class="status success">✅ التطبيق يعمل</span>
+              <span class="status ${whatsappService.isClientReady() ? 'success' : 'warning'}">
+                ${whatsappService.isClientReady() ? '✅' : '⏳'} WhatsApp ${whatsappService.isClientReady() ? 'متصل' : 'قيد الاتصال'}
+              </span>
+              <span class="status success">✅ AI: ${aiService.getProviderName()}</span>
+            </div>
+
+            <h3>🔗 الروابط المفيدة</h3>
+            <ul>
+              <li><a href="/health">📊 فحص صحة النظام (Health Check)</a></li>
+              <li><a href="/test/ai">🤖 اختبار AI Service</a></li>
+              <li><a href="/test/whatsapp">📱 اختبار WhatsApp</a></li>
+              <li><a href="/test/notification-queue">📮 حالة قائمة الإشعارات</a></li>
+              <li><a href="/test/scheduler-jobs">⏰ المهام المجدولة</a></li>
+              <li><a href="/test/team-members">👥 أعضاء الفريق</a></li>
+            </ul>
+
+            <h3>📡 Webhook Endpoints</h3>
+            <ul>
+              <li>POST /webhooks/task-created</li>
+              <li>POST /webhooks/task-updated</li>
+              <li>POST /webhooks/task-comment</li>
+              <li>POST /webhooks/sample-request</li>
+            </ul>
+
+            <h3>ℹ️ معلومات النظام</h3>
+            <ul>
+              <li>النسخة: 4.0.0</li>
+              <li>البيئة: ${env.NODE_ENV}</li>
+              <li>المنفذ: ${env.PORT}</li>
+              <li>المنطقة الزمنية: ${env.TZ}</li>
+            </ul>
+          </div>
+        </body>
+        </html>
       `);
     });
+
+    // Register route modules
+    this.app.use('/webhooks', webhookRoutes);
+    this.app.use('/test', testRoutes);
 
     logger.success('Routes configured');
   }
@@ -186,17 +252,16 @@ class Application {
       logger.error('Application error occurred', { error });
     });
 
-    // Task events
-    eventBus.onEvent(EVENTS.TASK_COMPLETED, async (data) => {
-      logger.debug('Task completed event received', { taskId: data.taskId });
-      // TODO: Handle task completion
+    // WhatsApp events
+    eventBus.onEvent(EVENTS.WHATSAPP_READY, () => {
+      logger.success('WhatsApp service is ready and connected');
     });
 
-    // Notification events
-    eventBus.onEvent(EVENTS.NOTIFICATION_SENT, (data) => {
-      logger.debug('Notification sent', { type: data.type });
+    eventBus.onEvent(EVENTS.WHATSAPP_DISCONNECTED, (data) => {
+      logger.warn('WhatsApp service disconnected', data);
     });
 
+    // Task events are handled by NotificationService
     logger.success('Event listeners configured');
   }
 
@@ -208,7 +273,8 @@ class Application {
     this.app.use((req, res) => {
       res.status(404).json({
         error: 'Not Found',
-        path: req.path
+        path: req.path,
+        message: 'The requested endpoint does not exist'
       });
     });
 
@@ -271,6 +337,10 @@ class Application {
     logger.warn('Shutting down gracefully...');
 
     try {
+      // Stop scheduler
+      schedulerService.stop();
+      logger.info('Scheduler stopped');
+
       // Close HTTP server
       if (this.server) {
         await new Promise((resolve) => {
@@ -279,10 +349,9 @@ class Application {
         logger.info('HTTP server closed');
       }
 
-      // Close other services
-      // TODO: Add service cleanup when services are implemented
-      // await whatsappService.disconnect();
-      // await schedulerService.stop();
+      // Disconnect WhatsApp
+      await whatsappService.disconnect();
+      logger.info('WhatsApp disconnected');
 
       logger.stop('Application stopped');
       process.exit(code);

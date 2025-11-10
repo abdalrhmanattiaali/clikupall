@@ -225,4 +225,53 @@ router.post('/resume-notifications', async (req, res) => {
   }
 });
 
+/**
+ * GET /test/send-test-message
+ * Send a test message to the WhatsApp group (simple GET endpoint for easy testing)
+ */
+router.get('/send-test-message', async (req, res) => {
+  try {
+    if (!whatsappService.isClientReady()) {
+      return res.status(503).json({
+        success: false,
+        error: 'WhatsApp is not ready yet. Please wait or scan QR code.'
+      });
+    }
+
+    if (!whatsappService.getGroupChatId()) {
+      return res.status(404).json({
+        success: false,
+        error: 'Group chat not found. Please check WHATSAPP_GROUP_NAME in .env'
+      });
+    }
+
+    const testMessage = `✅ رسالة اختبار من التطبيق
+
+🤖 النظام يعمل بشكل صحيح!
+⏰ الوقت: ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}
+
+إذا وصلتك هذه الرسالة، معنى ذلك أن:
+✓ السيرفر يعمل
+✓ الواتساب متصل
+✓ المجموعة مكتشفة
+
+الآن يمكنك تكوين Webhooks في ClickUp لاستقبال الإشعارات!
+
+راجع ملف WEBHOOK_SETUP.md للتعليمات الكاملة.`;
+
+    await whatsappService.sendToGroup(testMessage);
+
+    res.json({
+      success: true,
+      message: 'Test message sent to WhatsApp group successfully! Check your phone.'
+    });
+  } catch (error) {
+    logger.error('Test message failed', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 export default router;

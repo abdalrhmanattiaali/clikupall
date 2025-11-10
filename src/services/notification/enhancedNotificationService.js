@@ -12,11 +12,13 @@ import { shortenUrl } from '../../utils/urlShortener.js';
 class EnhancedNotificationService {
   constructor() {
     this.queue = [];
+    this.pendingNotifications = []; // Queue for notifications when WhatsApp is not ready
     this.isPaused = false;
     this.pauseTimeout = null;
     this.batchTimeout = null;
     this.batchDelay = env.notifications.batchDelay;
     this.sentDirectNotifications = new Set();
+    this.whatsappReady = false;
 
     this.setupEventListeners();
   }
@@ -26,6 +28,10 @@ class EnhancedNotificationService {
    */
   setupEventListeners() {
     logger.info('Setting up enhanced notification listeners');
+
+    // System Events
+    eventBus.onEvent(EVENTS.WHATSAPP_READY, () => this.handleWhatsAppReady());
+    eventBus.onEvent(EVENTS.WHATSAPP_DISCONNECTED, () => this.handleWhatsAppDisconnected());
 
     // Task Management Events
     eventBus.onEvent(EVENTS.TASK_CREATED, (data) => this.handleTaskCreated(data));
@@ -69,10 +75,51 @@ class EnhancedNotificationService {
   // ==================== EVENT HANDLERS ====================
 
   /**
+   * Handle WhatsApp ready event
+   */
+  async handleWhatsAppReady() {
+    this.whatsappReady = true;
+    logger.success('WhatsApp ready - notification service activated');
+
+    // Process any pending notifications
+    if (this.pendingNotifications.length > 0) {
+      logger.info(`Processing ${this.pendingNotifications.length} pending notifications`);
+
+      for (const pending of this.pendingNotifications) {
+        try {
+          await this.sendImmediateNotification(pending.message, pending.target, pending.phone);
+        } catch (error) {
+          logger.error('Failed to send pending notification', {
+            error: error.message,
+            target: pending.target
+          });
+        }
+      }
+
+      this.pendingNotifications = [];
+      logger.success('All pending notifications processed');
+    }
+  }
+
+  /**
+   * Handle WhatsApp disconnected event
+   */
+  handleWhatsAppDisconnected() {
+    this.whatsappReady = false;
+    logger.warn('WhatsApp disconnected - notifications will be queued');
+  }
+
+  /**
    * Handle task created
    */
   async handleTaskCreated(data) {
     const { task, assignees } = data;
+
+    logger.info('📝 Processing TASK_CREATED event', {
+      taskId: task.id,
+      taskName: task.name,
+      assignees: assignees?.length || 0
+    });
 
     const message = await this.buildTaskCreatedMessage(task, assignees);
 
@@ -88,7 +135,11 @@ class EnhancedNotificationService {
       }
     }
 
-    logger.success('Task created notification sent', { taskId: task.id });
+    logger.success('Task created notifications processed', {
+      taskId: task.id,
+      sentToGroup: true,
+      sentToUsers: assignees?.length || 0
+    });
   }
 
   /**
@@ -97,14 +148,22 @@ class EnhancedNotificationService {
   async handleTaskCompleted(data) {
     const { task, userName, gamificationResult } = data;
 
+    logger.info('✅ Processing TASK_COMPLETED event', {
+      taskId: task.id,
+      taskName: task.name,
+      userName,
+      points: gamificationResult?.pointsEarned || 0
+    });
+
     const message = await this.buildTaskCompletedMessage(task, userName, gamificationResult);
 
     // Send immediately - important event!
     await this.sendImmediateNotification(message, 'group');
 
-    logger.success('Task completed notification sent', {
+    logger.success('Task completed notification processed', {
       taskId: task.id,
-      points: gamificationResult?.pointsEarned
+      points: gamificationResult?.pointsEarned,
+      sentToGroup: true
     });
   }
 
@@ -114,7 +173,17 @@ class EnhancedNotificationService {
   async handleTaskAssigned(data) {
     const { task, assignees, assignedBy } = data;
 
-    if (!assignees || assignees.length === 0) return;
+    if (!assignees || assignees.length === 0) {
+      logger.debug('TASK_ASSIGNED event received but no assignees found');
+      return;
+    }
+
+    logger.info('👤 Processing TASK_ASSIGNED event', {
+      taskId: task.id,
+      taskName: task.name,
+      assignees: assignees.map(a => a.name).join(', '),
+      assignedBy
+    });
 
     for (const assignee of assignees) {
       const message = await this.buildTaskAssignedMessage(task, assignee, assignedBy);
@@ -129,7 +198,10 @@ class EnhancedNotificationService {
       }
     }
 
-    logger.success('Task assigned notifications sent', { taskId: task.id });
+    logger.success('Task assigned notifications processed', {
+      taskId: task.id,
+      assigneeCount: assignees.length
+    });
   }
 
   /**
@@ -739,24 +811,41 @@ class EnhancedNotificationService {
    * Send immediate notification
    */
   async sendImmediateNotification(message, target, phone = null) {
+    // Check if WhatsApp is ready
     if (!whatsappService.isClientReady()) {
-      logger.warn('WhatsApp not ready, skipping immediate notification');
+      // Add to pending queue
+      this.pendingNotifications.push({ message, target, phone, timestamp: Date.now() });
+
+      logger.warn('WhatsApp not ready - notification queued for later', {
+        target,
+        pendingCount: this.pendingNotifications.length,
+        messagePreview: message.substring(0, 50) + '...'
+      });
       return;
     }
 
     try {
       if (target === 'group') {
         await whatsappService.sendToGroup(message);
+        logger.success('✅ Notification sent to group', {
+          messagePreview: message.substring(0, 50) + '...'
+        });
       } else if (target === 'user' && phone) {
         await whatsappService.sendToUser(phone, message);
+        logger.success('✅ Notification sent to user', {
+          phone: phone.substring(0, 8) + '...',
+          messagePreview: message.substring(0, 50) + '...'
+        });
       }
-
-      logger.debug('Immediate notification sent', { target, hasPhone: !!phone });
     } catch (error) {
-      logger.error('Failed to send immediate notification', {
+      logger.error('❌ Failed to send immediate notification', {
         error: error.message,
-        target
+        target,
+        phone: phone ? phone.substring(0, 8) + '...' : null
       });
+
+      // Retry: add to pending queue
+      this.pendingNotifications.push({ message, target, phone, timestamp: Date.now() });
     }
   }
 

@@ -3,7 +3,7 @@
  * Uses file-based storage as fallback when SQLite is unavailable
  */
 
-import logger from '../utils/logger.js';
+import logger from '../core/logger.js';
 
 // Try to use SQLite, fallback to file-based storage
 let databaseService;

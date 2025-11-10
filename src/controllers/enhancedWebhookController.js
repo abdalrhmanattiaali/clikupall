@@ -106,24 +106,16 @@ export async function handleWebhook(req, res) {
       taskData = body.payload;
       taskId = taskData.id;
 
-      // Determine event type from task status or default to updated
-      if (taskData.status) {
-        const statusName = taskData.status.status?.toLowerCase();
-        if (statusName === 'complete' || statusName === 'closed') {
-          event = TRIGGER_TYPES.STATUS_CHANGED;
-        } else {
-          event = TRIGGER_TYPES.TASK_UPDATED;
-        }
-      } else {
-        event = TRIGGER_TYPES.TASK_UPDATED;
-      }
+      // Always treat automation webhooks as status changes since they're triggered by task updates
+      event = TRIGGER_TYPES.STATUS_CHANGED;
 
       logger.info('Automation webhook received', {
         webhookId,
         autoId: body.auto_id,
         triggerId: body.trigger_id,
         taskId,
-        taskName: taskData.name
+        taskName: taskData.name,
+        status: taskData.status?.status
       });
     } else {
       // Standard webhook structure: {event, task_id, ...}
@@ -386,8 +378,17 @@ async function handleAssigneeRemoved(task, historyItem, changedBy) {
  * Handle status changed (including completion)
  */
 async function handleStatusChanged(task, historyItem, changedBy) {
-  const beforeStatus = historyItem?.before?.status || 'Unknown';
-  const afterStatus = task.status_name || historyItem?.after?.status || 'Unknown';
+  // For automation webhooks, historyItem might be null
+  const beforeStatus = historyItem?.before?.status || 'unknown';
+  const afterStatus = task.status_name || historyItem?.after?.status || 'unknown';
+
+  logger.debug('Status change detected', {
+    taskId: task.id,
+    beforeStatus,
+    afterStatus,
+    isAutomation: !historyItem
+  });
+
   const isComplete = TASK_STATUS.NON_OPEN.includes(afterStatus.toLowerCase().trim());
 
   if (isComplete) {

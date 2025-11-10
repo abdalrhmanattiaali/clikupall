@@ -11,6 +11,8 @@ import clickupService from '../clickup/clickupService.js';
 import notificationService from '../notification/notificationService.js';
 import aiService from '../ai/index.js';
 import motivationService from '../motivation/motivationService.js';
+import gamificationService from '../gamification/gamificationService.js';
+import leaderboardService from '../gamification/leaderboardService.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import { TEAM } from '../../config/team.js';
 import { TASK_STATUS } from '../../config/constants.js';
@@ -124,6 +126,21 @@ class SchedulerService {
       '0 9 * * 5',
       'AI Weekly Report',
       () => this.sendAIWeeklyReport()
+    );
+
+    // ============================================
+    // 🏆 Gamification Weekly Reports (Friday 6 PM)
+    // ============================================
+    this.scheduleJob(
+      '0 18 * * 5',
+      'Weekly Achievement Reports',
+      () => this.sendWeeklyAchievementReports()
+    );
+
+    this.scheduleJob(
+      '30 18 * * 5',
+      'Weekly Leaderboard',
+      () => leaderboardService.sendComprehensiveLeaderboard()
     );
 
     logger.success(`Scheduler initialized with ${this.jobs.length} jobs`);
@@ -566,6 +583,46 @@ class SchedulerService {
     });
 
     this.jobs = [];
+  }
+
+  /**
+   * Send weekly achievement reports to all team members
+   * Individual reports via private message
+   */
+  async sendWeeklyAchievementReports() {
+    if (!whatsappService.isClientReady()) {
+      logger.warn('WhatsApp not ready, skipping weekly achievement reports');
+      return;
+    }
+
+    logger.info('Sending weekly achievement reports to all team members');
+
+    for (let i = 0; i < TEAM.length; i++) {
+      const member = TEAM[i];
+
+      try {
+        // Generate weekly report
+        const report = await gamificationService.generateWeeklyReport(member.id);
+
+        if (report) {
+          // Send to user privately
+          await whatsappService.sendToUser(member.phone, report);
+
+          logger.info(`Weekly achievement report sent to ${member.name}`);
+        }
+
+        // Delay between messages
+        if (i < TEAM.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      } catch (error) {
+        logger.error(`Failed to send weekly achievement report to ${member.name}`, {
+          error: error.message
+        });
+      }
+    }
+
+    logger.success('Weekly achievement reports completed');
   }
 
   /**

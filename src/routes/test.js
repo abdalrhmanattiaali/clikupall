@@ -11,9 +11,13 @@ import whatsappService from '../services/whatsapp/whatsappService.js';
 import notificationService from '../services/notification/notificationService.js';
 import schedulerService from '../services/scheduler/schedulerService.js';
 import motivationService from '../services/motivation/motivationService.js';
+import gamificationService from '../services/gamification/gamificationService.js';
+import leaderboardService from '../services/gamification/leaderboardService.js';
 import productivityRepo from '../repositories/productivityRepository.js';
 import achievementRepo from '../repositories/achievementRepository.js';
-import { TEAM, findMemberByName } from '../config/team.js';
+import { TEAM, findMemberByName, findMemberById } from '../config/team.js';
+import { ALL_BADGES } from '../config/badges.js';
+import { SHIELD_LEVELS } from '../config/shields.js';
 
 const router = express.Router();
 
@@ -413,6 +417,161 @@ router.delete('/motivation-history', async (req, res) => {
       success: false,
       error: error.message
     });
+  }
+});
+
+/**
+ * 🏆 GAMIFICATION TEST ENDPOINTS
+ */
+
+/**
+ * GET /test/badges
+ * List all available badges
+ */
+router.get('/badges', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      totalBadges: ALL_BADGES.length,
+      badges: ALL_BADGES.map(b => ({
+        id: b.id,
+        name: b.name,
+        category: b.category,
+        points: b.points,
+        rarity: b.rarity
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/shields
+ * List all shield levels
+ */
+router.get('/shields', async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      totalLevels: SHIELD_LEVELS.length,
+      shields: SHIELD_LEVELS
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/user-achievements/:userId
+ * Get user achievements and stats
+ */
+router.get('/user-achievements/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    const stats = await gamificationService.getUserStats(userId);
+    const member = findMemberById(userId);
+
+    res.json({
+      success: true,
+      user: member?.name || `User ${userId}`,
+      stats
+    });
+  } catch (error) {
+    logger.error('Failed to get user achievements', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /test/leaderboard/:type
+ * Get leaderboard (types: points, tasks, streak)
+ */
+router.get('/leaderboard/:type?', async (req, res) => {
+  try {
+    const type = req.params.type || 'points';
+    const leaderboard = await gamificationService.getLeaderboard(type);
+
+    res.json({
+      success: true,
+      type,
+      leaderboard
+    });
+  } catch (error) {
+    logger.error('Failed to get leaderboard', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/send-leaderboard
+ * Send leaderboard to WhatsApp group
+ */
+router.post('/send-leaderboard', async (req, res) => {
+  try {
+    const { type = 'points' } = req.body;
+    const result = await leaderboardService.sendLeaderboardToGroup(type);
+
+    res.json({
+      success: result,
+      message: result ? 'Leaderboard sent!' : 'Failed to send'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/send-weekly-reports
+ * Trigger weekly achievement reports
+ */
+router.post('/send-weekly-reports', async (req, res) => {
+  try {
+    await schedulerService.sendWeeklyAchievementReports();
+    res.json({
+      success: true,
+      message: 'Weekly reports sent to all team members'
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /test/simulate-task-complete
+ * Simulate task completion for testing gamification
+ */
+router.post('/simulate-task-complete', async (req, res) => {
+  try {
+    const { userId, taskName = 'Test Task' } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'userId is required'
+      });
+    }
+
+    const mockTask = {
+      id: `test-${Date.now()}`,
+      name: taskName,
+      status: { status: 'complete' },
+      priority: { id: 2 },
+      assignees: [{ id: parseInt(userId) }],
+      date_created: Date.now() - 3600000, // 1 hour ago
+      date_closed: Date.now()
+    };
+
+    const result = await gamificationService.processCompletedTask(mockTask, parseInt(userId));
+
+    res.json({
+      success: true,
+      result,
+      message: 'Task completion simulated successfully'
+    });
+  } catch (error) {
+    logger.error('Failed to simulate task', { error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

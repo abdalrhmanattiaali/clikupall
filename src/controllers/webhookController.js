@@ -7,6 +7,7 @@ import logger from '../core/logger.js';
 import eventBus, { EVENTS } from '../core/eventBus.js';
 import clickupService from '../services/clickup/clickupService.js';
 import productivityRepo from '../repositories/productivityRepository.js';
+import gamificationService from '../services/gamification/gamificationService.js';
 import { TASK_STATUS } from '../config/constants.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
 import { TASK_CATEGORIES } from '../config/constants.js';
@@ -158,6 +159,37 @@ export async function handleTaskUpdated(req, res) {
             task,
             userName: updaterName
           });
+
+          // 🎮 Process gamification (badges, shields, points)
+          // Try to get user ID from assignees or updater
+          let userId = null;
+          if (task.assignees && task.assignees.length > 0) {
+            userId = task.assignees[0].id; // First assignee
+          } else if (historyItem.user) {
+            // Try to find by email/username
+            const member = findMemberByEmail(historyItem.user.email);
+            userId = member?.id;
+          }
+
+          if (userId) {
+            try {
+              const gamificationResult = await gamificationService.processCompletedTask(task, userId);
+              logger.success('Gamification processed', {
+                taskId: task.id,
+                userId,
+                pointsEarned: gamificationResult?.pointsEarned,
+                newBadges: gamificationResult?.newBadges?.length || 0
+              });
+            } catch (gamError) {
+              logger.error('Gamification failed', {
+                error: gamError.message,
+                taskId: task.id,
+                userId
+              });
+            }
+          } else {
+            logger.warn('Cannot process gamification: user ID not found', { taskId: task.id });
+          }
 
           logger.success('Task completed event emitted', {
             taskId: task.id,

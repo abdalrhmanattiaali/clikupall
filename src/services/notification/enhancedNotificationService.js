@@ -226,18 +226,43 @@ class EnhancedNotificationService {
   async handleTaskStatusChanged(data) {
     const { task, beforeStatus, afterStatus, userName } = data;
 
+    logger.info('🔄 Processing TASK_STATUS_CHANGED event', {
+      taskId: task.id,
+      taskName: task.name,
+      beforeStatus,
+      afterStatus,
+      userName
+    });
+
+    // For meaningful status changes (not unknown->unknown), send immediately
+    const isMeaningfulChange = beforeStatus !== 'unknown' || afterStatus !== 'unknown';
+
     const message = `🔄 *تغيير حالة المهمة*\n\n` +
       `*المهمة:* ${task.name}\n` +
       `*من:* ${beforeStatus}\n` +
       `*إلى:* ${afterStatus}\n` +
       `*بواسطة:* ${userName}`;
 
-    this.addToQueue({
-      type: 'status_changed',
-      task,
-      message,
-      userName
-    });
+    if (isMeaningfulChange && afterStatus !== 'unknown') {
+      // Send immediately for real status changes
+      await this.sendImmediateNotification(message, 'group');
+      logger.success('Status change notification sent', {
+        taskId: task.id,
+        sentToGroup: true
+      });
+    } else {
+      // Queue for less important or unclear changes
+      this.addToQueue({
+        type: 'status_changed',
+        task,
+        message,
+        userName
+      });
+      logger.debug('Status change queued for batch', {
+        taskId: task.id,
+        reason: 'unknown status'
+      });
+    }
   }
 
   /**

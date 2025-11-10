@@ -136,15 +136,19 @@ export async function handleWebhook(req, res) {
       logger.info('Standard webhook received', { webhookId, event, taskId });
     }
 
-    // Fetch or use complete task data
+    // Fetch complete task data from ClickUp API
+    // Note: Always fetch from API for automation webhooks because payload is incomplete
     let task;
-    if (taskData) {
-      // Use task data from automation webhook payload - transform and store
+    const shouldFetchFromApi = !taskData || !taskData.status;
+
+    if (shouldFetchFromApi) {
+      // Fetch complete task data from ClickUp API and store in database
+      logger.debug('Fetching complete task data from API', { taskId, reason: taskData ? 'incomplete payload' : 'no payload' });
+      task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
+    } else {
+      // Use task data from webhook payload - transform and store
       task = enhancedClickUpService.transformTaskData(taskData);
       await databaseService.upsertTask(task);
-    } else {
-      // Fetch complete task data from ClickUp API and store in database
-      task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
     }
 
     // Calculate AI weight if not already done

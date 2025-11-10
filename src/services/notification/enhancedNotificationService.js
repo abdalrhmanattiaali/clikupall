@@ -121,24 +121,30 @@ class EnhancedNotificationService {
       assignees: assignees?.length || 0
     });
 
-    const message = await this.buildTaskCreatedMessage(task, assignees);
+    const groupMessage = await this.buildTaskCreatedMessage(task, assignees);
 
-    // Send immediately to group
-    await this.sendImmediateNotification(message, 'group');
+    // Add to batch queue for group (not immediate)
+    this.addToQueue({
+      type: 'task_created',
+      task,
+      message: groupMessage,
+      data: { assignees }
+    });
 
-    // Send to assignees privately
+    // Send DM to assignees immediately with personalized message
     if (assignees && assignees.length > 0) {
       for (const assignee of assignees) {
         if (assignee.phone) {
-          await this.sendImmediateNotification(message, 'user', assignee.phone);
+          const dmMessage = await this.buildTaskAssignedDM(task, assignee);
+          await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
       }
     }
 
-    logger.success('Task created notifications processed', {
+    logger.success('Task created notifications queued', {
       taskId: task.id,
-      sentToGroup: true,
-      sentToUsers: assignees?.length || 0
+      queuedForGroup: true,
+      sentDMs: assignees?.length || 0
     });
   }
 
@@ -155,15 +161,32 @@ class EnhancedNotificationService {
       points: gamificationResult?.pointsEarned || 0
     });
 
-    const message = await this.buildTaskCompletedMessage(task, userName, gamificationResult);
+    const groupMessage = await this.buildTaskCompletedMessage(task, userName, gamificationResult);
 
-    // Send immediately - important event!
-    await this.sendImmediateNotification(message, 'group');
+    // Add to batch queue for group
+    this.addToQueue({
+      type: 'task_completed',
+      task,
+      message: groupMessage,
+      data: { userName, gamificationResult }
+    });
 
-    logger.success('Task completed notification processed', {
+    // Send DM to task completer with achievements and tips
+    const assignees = this.getAssigneesFromTask(task);
+    if (assignees.length > 0 && gamificationResult) {
+      for (const assignee of assignees) {
+        if (assignee.phone) {
+          const dmMessage = await this.buildCompletionDM(task, assignee, gamificationResult);
+          await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
+        }
+      }
+    }
+
+    logger.success('Task completed notification queued', {
       taskId: task.id,
       points: gamificationResult?.pointsEarned,
-      sentToGroup: true
+      queuedForGroup: true,
+      sentDMs: assignees.length
     });
   }
 
@@ -234,35 +257,25 @@ class EnhancedNotificationService {
       userName
     });
 
-    // For meaningful status changes (not unknown->unknown), send immediately
-    const isMeaningfulChange = beforeStatus !== 'unknown' || afterStatus !== 'unknown';
-
     const message = `🔄 *تغيير حالة المهمة*\n\n` +
       `*المهمة:* ${task.name}\n` +
       `*من:* ${beforeStatus}\n` +
       `*إلى:* ${afterStatus}\n` +
       `*بواسطة:* ${userName}`;
 
-    if (isMeaningfulChange && afterStatus !== 'unknown') {
-      // Send immediately for real status changes
-      await this.sendImmediateNotification(message, 'group');
-      logger.success('Status change notification sent', {
-        taskId: task.id,
-        sentToGroup: true
-      });
-    } else {
-      // Queue for less important or unclear changes
-      this.addToQueue({
-        type: 'status_changed',
-        task,
-        message,
-        userName
-      });
-      logger.debug('Status change queued for batch', {
-        taskId: task.id,
-        reason: 'unknown status'
-      });
-    }
+    // Always queue for batch (not immediate)
+    this.addToQueue({
+      type: 'status_changed',
+      task,
+      message,
+      data: { beforeStatus, afterStatus, userName }
+    });
+
+    logger.debug('Status change queued for batch', {
+      taskId: task.id,
+      from: beforeStatus,
+      to: afterStatus
+    });
   }
 
   /**
@@ -720,6 +733,111 @@ class EnhancedNotificationService {
     return message;
   }
 
+  /**
+   * Build DM for task assignment (more personal)
+   */
+  async buildTaskAssignedDM(task, assignee) {
+    const aiWeight = task.ai_weight || 10;
+    const complexity = task.ai_complexity || 'medium';
+
+    let message = `👋 *مرحباً ${assignee.name}!*\n\n`;
+    message += `🎯 *تم إسناد مهمة جديدة لك:*\n`;
+    message += `📝 ${task.name}\n\n`;
+    message += `*التفاصيل:*\n`;
+    message += `• الأولوية: ${task.priority_label || 'عادية'}\n`;
+    message += `• الوزن: ${aiWeight} نقطة 💎\n`;
+    message += `• التعقيد: ${this.translateComplexity(complexity)}\n`;
+
+    if (task.ai_estimated_time) {
+      message += `• الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️\n`;
+    }
+
+    if (task.due_date) {
+      const dueDate = new Date(parseInt(task.due_date));
+      const daysUntil = Math.ceil((dueDate - Date.now()) / (1000 * 60 * 60 * 24));
+      if (daysUntil <= 3) {
+        message += `• الموعد النهائي: ⚠️ بعد ${daysUntil} ${daysUntil === 1 ? 'يوم' : 'أيام'} فقط!\n`;
+      } else {
+        message += `• الموعد النهائي: بعد ${daysUntil} ${daysUntil === 1 ? 'يوم' : 'أيام'}\n`;
+      }
+    }
+
+    message += `\n🔗 ${task.url}\n\n`;
+    message += `💪 *بالتوفيق!*`;
+
+    return message;
+  }
+
+  /**
+   * Build DM for task completion (with achievements)
+   */
+  async buildCompletionDM(task, assignee, gamificationResult) {
+    let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
+    message += `✅ لقد أكملت: *${task.name}*\n\n`;
+
+    message += `*المكافآت:*\n`;
+    message += `• ${gamificationResult.pointsEarned} نقطة 🎯\n`;
+
+    if (gamificationResult.newBadges && gamificationResult.newBadges.length > 0) {
+      message += `• ${gamificationResult.newBadges.length} وسام جديد! 🏆\n`;
+      gamificationResult.newBadges.forEach(badge => {
+        message += `  - ${badge.name} ${badge.emoji || '⭐'}\n`;
+      });
+    }
+
+    if (gamificationResult.shieldUpgrade) {
+      message += `• ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
+    }
+
+    // Add personalized tip
+    const tips = [
+      '💡 *نصيحة:* حاول إكمال المهام الأصعب في بداية اليوم عندما يكون تركيزك أعلى!',
+      '💡 *نصيحة:* قسّم المهام الكبيرة إلى مهام فرعية أصغر لتحقيق تقدم مستمر!',
+      '💡 *نصيحة:* خصص 25 دقيقة من التركيز الكامل (Pomodoro) ثم استرح 5 دقائق!',
+      '💡 *نصيحة:* راجع مهامك المكتملة أسبوعياً لتقييم تقدمك!',
+      '💡 *نصيحة:* تواصل مع الفريق عند مواجهة عقبات - التعاون يسرّع الإنجاز!',
+      '💡 *نصيحة:* ضع أهدافاً يومية صغيرة وقابلة للتحقيق!'
+    ];
+    const randomTip = tips[Math.floor(Math.random() * tips.length)];
+
+    message += `\n${randomTip}\n\n`;
+    message += `🔥 استمر في الإنجاز!`;
+
+    return message;
+  }
+
+  /**
+   * Get assignees from task data
+   */
+  getAssigneesFromTask(task) {
+    let assigneeIds = task.assignee_ids;
+
+    if (typeof assigneeIds === 'string') {
+      try {
+        assigneeIds = JSON.parse(assigneeIds);
+      } catch (e) {
+        assigneeIds = [];
+      }
+    }
+
+    if (!Array.isArray(assigneeIds)) {
+      assigneeIds = [];
+    }
+
+    // Dynamically import team config
+    const { findMemberById } = require('../../config/team.js');
+
+    return assigneeIds.map(id => {
+      const member = findMemberById(parseInt(id));
+      return member ? {
+        id: member.id,
+        name: member.name,
+        phone: member.phone,
+        email: member.email
+      } : null;
+    }).filter(Boolean);
+  }
+
   // ==================== QUEUE MANAGEMENT ====================
 
   /**
@@ -786,7 +904,7 @@ class EnhancedNotificationService {
   }
 
   /**
-   * Send batch notifications
+   * Send batch notifications (organized and formatted)
    */
   async sendBatchNotifications(batch) {
     if (!whatsappService.isClientReady()) {
@@ -794,35 +912,105 @@ class EnhancedNotificationService {
       return;
     }
 
-    // Group notifications by type and user
-    const grouped = {};
+    if (batch.length === 0) return;
+
+    // Group by type for better organization
+    const byType = {
+      task_created: [],
+      task_completed: [],
+      status_changed: [],
+      task_assigned: [],
+      priority_changed: [],
+      other: []
+    };
 
     batch.forEach(item => {
-      const userName = item.userName || 'General';
-      if (!grouped[userName]) {
-        grouped[userName] = {};
+      const type = item.type || 'other';
+      if (byType[type]) {
+        byType[type].push(item);
+      } else {
+        byType.other.push(item);
       }
-      if (!grouped[userName][item.type]) {
-        grouped[userName][item.type] = [];
-      }
-      grouped[userName][item.type].push(item);
     });
 
-    // Build summary message
-    let summaryMessage = '📢 *ملخص التحديثات:*\n';
+    // Build organized message
+    let finalMessage = `📊 *التحديثات (${batch.length})*\n`;
+    finalMessage += `━━━━━━━━━━━━━━━━━━━\n\n`;
 
-    for (const [userName, types] of Object.entries(grouped)) {
-      summaryMessage += `\n*${userName}:*\n`;
-
-      for (const [type, items] of Object.entries(types)) {
-        summaryMessage += `  • ${items.length} ${this.getTypeLabel(type)}\n`;
+    // Completed tasks (most important)
+    if (byType.task_completed.length > 0) {
+      finalMessage += `🎉 *مهام مكتملة (${byType.task_completed.length}):*\n`;
+      byType.task_completed.forEach((item, i) => {
+        if (i < 5) { // Limit to 5
+          const userName = item.data?.userName || 'Unknown';
+          const points = item.data?.gamificationResult?.pointsEarned || 0;
+          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
+          finalMessage += `     👤 ${userName} | 🎯 ${points} نقطة\n`;
+        }
+      });
+      if (byType.task_completed.length > 5) {
+        finalMessage += `     ... و ${byType.task_completed.length - 5} أخرى\n`;
       }
+      finalMessage += `\n`;
     }
 
-    // Send summary to group
+    // New tasks
+    if (byType.task_created.length > 0) {
+      finalMessage += `📝 *مهام جديدة (${byType.task_created.length}):*\n`;
+      byType.task_created.forEach((item, i) => {
+        if (i < 5) {
+          const assignees = item.data?.assignees?.map(a => a.name).join(', ') || 'غير مسندة';
+          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
+          finalMessage += `     👥 ${assignees}\n`;
+        }
+      });
+      if (byType.task_created.length > 5) {
+        finalMessage += `     ... و ${byType.task_created.length - 5} أخرى\n`;
+      }
+      finalMessage += `\n`;
+    }
+
+    // Status changes
+    if (byType.status_changed.length > 0) {
+      finalMessage += `🔄 *تغييرات الحالة (${byType.status_changed.length}):*\n`;
+      byType.status_changed.forEach((item, i) => {
+        if (i < 3) {
+          const data = item.data || {};
+          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
+          finalMessage += `     ${data.beforeStatus} → ${data.afterStatus}\n`;
+        }
+      });
+      if (byType.status_changed.length > 3) {
+        finalMessage += `     ... و ${byType.status_changed.length - 3} أخرى\n`;
+      }
+      finalMessage += `\n`;
+    }
+
+    // Assigned tasks
+    if (byType.task_assigned.length > 0) {
+      finalMessage += `👤 *تكليفات جديدة (${byType.task_assigned.length}):*\n`;
+      byType.task_assigned.forEach((item, i) => {
+        if (i < 3) {
+          finalMessage += `  ${i + 1}. ${item.task.name}\n`;
+        }
+      });
+      if (byType.task_assigned.length > 3) {
+        finalMessage += `     ... و ${byType.task_assigned.length - 3} أخرى\n`;
+      }
+      finalMessage += `\n`;
+    }
+
+    finalMessage += `━━━━━━━━━━━━━━━━━━━\n`;
+    finalMessage += `⏱️ آخر ${Math.round(this.batchDelay / 1000)} ثانية`;
+
+    // Send to group
     try {
-      await whatsappService.sendToGroup(summaryMessage);
-      logger.success('Batch notification summary sent to group');
+      await whatsappService.sendToGroup(finalMessage);
+      logger.success('Organized batch notification sent to group', {
+        total: batch.length,
+        completed: byType.task_completed.length,
+        created: byType.task_created.length
+      });
       eventBus.emitEvent(EVENTS.NOTIFICATION_SENT, { type: 'batch', count: batch.length });
     } catch (error) {
       logger.error('Failed to send batch notification', {

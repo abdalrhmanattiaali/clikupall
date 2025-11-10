@@ -106,8 +106,17 @@ export async function handleWebhook(req, res) {
       taskData = body.payload;
       taskId = taskData.id;
 
-      // Always treat automation webhooks as status changes since they're triggered by task updates
-      event = TRIGGER_TYPES.STATUS_CHANGED;
+      // Determine if this is a new task or status change
+      // New tasks have date_created very close to date_updated (within 5 seconds)
+      const dateCreated = taskData.date_created ? parseInt(taskData.date_created) : 0;
+      const dateUpdated = taskData.date_updated ? parseInt(taskData.date_updated) : 0;
+      const isNewTask = Math.abs(dateUpdated - dateCreated) < 5000; // 5 seconds
+
+      if (isNewTask) {
+        event = TRIGGER_TYPES.TASK_CREATED;
+      } else {
+        event = TRIGGER_TYPES.STATUS_CHANGED;
+      }
 
       logger.info('Automation webhook received', {
         webhookId,
@@ -115,7 +124,8 @@ export async function handleWebhook(req, res) {
         triggerId: body.trigger_id,
         taskId,
         taskName: taskData.name,
-        status: taskData.status?.status
+        status: taskData.status?.status,
+        detectedAs: isNewTask ? 'NEW_TASK' : 'STATUS_CHANGE'
       });
     } else {
       // Standard webhook structure: {event, task_id, ...}
@@ -225,7 +235,16 @@ function categorizeTrigger(event) {
  */
 async function routeToHandler(event, body, task) {
   const historyItem = body.history_items?.[0];
-  const changedBy = historyItem?.user?.username || 'Unknown';
+
+  // Get user who made the change - try multiple sources
+  let changedBy = 'Unknown';
+  if (historyItem?.user?.username) {
+    changedBy = historyItem.user.username;
+  } else if (task.creator_username) {
+    changedBy = task.creator_username;
+  } else if (body.payload?.creator?.username) {
+    changedBy = body.payload.creator.username;
+  }
 
   switch (event) {
     // ==================== TASK MANAGEMENT ====================

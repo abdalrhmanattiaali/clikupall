@@ -282,11 +282,7 @@ class EnhancedNotificationService {
       userName
     });
 
-    const message = `🔄 *تغيير حالة المهمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
-      `*من:* ${beforeStatus}\n` +
-      `*إلى:* ${afterStatus}\n` +
-      `*بواسطة:* ${userName}`;
+    const message = await this.buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName);
 
     // Always queue for batch (not immediate)
     this.addToQueue({
@@ -677,6 +673,15 @@ class EnhancedNotificationService {
    * Build task created message
    */
   async buildTaskCreatedMessage(task, assignees) {
+    const aiMessage = await this.generateNotificationWithTemplate('task_created_group', {
+      task,
+      assignees
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
     const aiWeight = task.ai_weight || 10;
     const complexity = task.ai_complexity || 'medium';
 
@@ -698,6 +703,7 @@ class EnhancedNotificationService {
       message += `*الموعد النهائي:* ${dueDate.toLocaleDateString('ar-EG')}\n`;
     }
 
+    message += `\n💡 ${this.buildTaskCreationInsight(task, assignees)}\n`;
     message += `\n🔗 ${task.url}`;
 
     return message;
@@ -707,6 +713,16 @@ class EnhancedNotificationService {
    * Build task completed message
    */
   async buildTaskCompletedMessage(task, userName, gamificationResult) {
+    const aiMessage = await this.generateNotificationWithTemplate('task_completed_group', {
+      task,
+      userName,
+      gamificationResult
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
     const aiWeight = task.ai_weight || 10;
     const complexity = task.ai_complexity || 'medium';
 
@@ -727,7 +743,31 @@ class EnhancedNotificationService {
       }
     }
 
-    message += `\n🎉 رائع! استمر في الإنجاز!`;
+    message += `\n🎯 ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
+    message += `\n🔗 ${task.url}`;
+
+    return message;
+  }
+
+  async buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName) {
+    const aiMessage = await this.generateNotificationWithTemplate('task_status_changed_group', {
+      task,
+      beforeStatus,
+      afterStatus,
+      userName
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    let message = `🔄 *تغيير حالة المهمة*\n\n`;
+    message += `*المهمة:* ${task.name}\n`;
+    message += `*من:* ${beforeStatus}\n`;
+    message += `*إلى:* ${afterStatus}\n`;
+    message += `*بواسطة:* ${userName}\n`;
+    message += `\n💡 ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
+    message += `\n🔗 ${task.url}`;
 
     return message;
   }
@@ -849,6 +889,95 @@ class EnhancedNotificationService {
     message += `🔥 استمر في الإنجاز!`;
 
     return message;
+  }
+
+  calculateDueInDays(task) {
+    if (!task?.due_date) {
+      return null;
+    }
+
+    const dueDate = new Date(parseInt(task.due_date));
+    if (Number.isNaN(dueDate.getTime())) {
+      return null;
+    }
+
+    return Math.ceil((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  }
+
+  buildTaskCreationInsight(task, assignees = []) {
+    const dueInDays = this.calculateDueInDays(task);
+    const priority = (task?.priority_label || 'عادية').toLowerCase();
+
+    if (typeof dueInDays === 'number' && dueInDays <= 0) {
+      return 'الموعد النهائي اليوم؛ قسّم المهام سريعاً وحدد تحديثاً في نهاية اليوم.';
+    }
+
+    if (typeof dueInDays === 'number' && dueInDays <= 2) {
+      const dayText = dueInDays === 1 ? 'يوم واحد' : `${dueInDays} أيام`;
+      return `بقي ${dayText} فقط؛ ابدأ بأكثر جزء حرج يفتح الطريق لبقية الفريق.`;
+    }
+
+    if (priority === 'urgent' || priority === 'high') {
+      return 'الأولوية مرتفعة؛ ضع نتيجة واضحة وشارك خطة التنفيذ مع الفريق خلال الساعتين القادمتين.';
+    }
+
+    if (task?.ai_estimated_time && task.ai_estimated_time >= 180) {
+      const hours = Math.round((task.ai_estimated_time / 60) * 10) / 10;
+      return `الوقت المتوقع يقارب ${hours} ساعة؛ خطّط لفترات تركيز عميق وحدد نقاط فحص للمراجعة.`;
+    }
+
+    if (assignees && assignees.length > 1) {
+      return `هناك ${assignees.length} أشخاص مشاركون؛ وزّعوا المسؤوليات وحددوا قناة تواصل سريعة.`;
+    }
+
+    return 'ابدأ بخطوة صغيرة تقود لنتيجة ملموسة اليوم وشارك تقدمك مع الفريق.';
+  }
+
+  buildStatusChangeInsight(task, beforeStatus, afterStatus, userName) {
+    const normalizedAfter = (afterStatus || '').toLowerCase();
+    const dueInDays = this.calculateDueInDays(task);
+
+    if (normalizedAfter.includes('review') || normalizedAfter.includes('مراج')) {
+      return 'المهمة بانتظار مراجعة؛ تأكد من وجود كل المرفقات وحدد لمن يتم توجيه التعليق.';
+    }
+
+    if (normalizedAfter.includes('progress') || normalizedAfter.includes('عمل') || normalizedAfter.includes('جاري')) {
+      if (typeof dueInDays === 'number' && dueInDays <= 2) {
+        return `المهمة الآن قيد التنفيذ، تبقى ${dueInDays <= 0 ? 'ساعات قليلة' : `${dueInDays} يوم`}؛ شارك تحديثاً سريعاً حول ما تم.`;
+      }
+      return 'انطلق في التنفيذ وحدد أول نتيجة ملموسة لمشاركتها مع الفريق خلال اليوم.';
+    }
+
+    if (normalizedAfter.includes('blocked') || normalizedAfter.includes('موقوف')) {
+      return 'تم تعليم المهمة كموقوفة؛ وضّح العائق الرئيسي واطلب الدعم المطلوب فوراً.';
+    }
+
+    if (normalizedAfter.includes('waiting') || normalizedAfter.includes('انتظار')) {
+      return 'المهمة بانتظار طرف آخر؛ دوّن ما تنتظره وحدد موعد متابعة واضح.';
+    }
+
+    return `تحديث بواسطة ${userName}; حافظ على توثيق أي متطلبات جديدة لتسريع التقدم.`;
+  }
+
+  buildCompletionHighlight(task, gamificationResult) {
+    const points = gamificationResult?.pointsEarned || 0;
+    const dueInDays = this.calculateDueInDays(task);
+
+    if (points >= 50) {
+      return `إنجاز ضخم (${points} نقطة)؛ شارك أفضل درس مستفاد مع الفريق اليوم.`;
+    }
+
+    if (gamificationResult?.newBadges && gamificationResult.newBadges.length > 0) {
+      return `حصلنا على ${gamificationResult.newBadges.length} وسام جديد؛ احتفل بالإنجاز وعرّف الجميع بكيفية تحقيقه.`;
+    }
+
+    if (typeof dueInDays === 'number' && dueInDays < 0) {
+      const lateDays = Math.abs(dueInDays);
+      const dayText = lateDays === 1 ? 'يوم' : `${lateDays} أيام`;
+      return `تم الإغلاق بعد الموعد بـ ${dayText}; سجّل سبب التأخير وخطة التحسين.`;
+    }
+
+    return 'إغلاق مميز؛ حدّد الخطوة التالية أو أي متابعة مطلوبة للحفاظ على الزخم.';
   }
 
   /**
@@ -1416,7 +1545,73 @@ class EnhancedNotificationService {
 **التعليمات:**
 - احتفظ بكل emoji والهيكل
 - املأ {placeholders} بالبيانات
-- الرسالة: 2-3 جمل تحفيزية شخصية`
+- الرسالة: 2-3 جمل تحفيزية شخصية`,
+
+      task_created_group: `أنت مساعد إشعارات. اكتب رسالة للفريق عن مهمة جديدة بالعربية مع الالتزام بالقالب.
+
+**القالب (التزم به تماماً):**
+📝 مهمة جديدة
+
+• الاسم: {task_name}
+• الأولوية: {priority}
+• الوزن: {weight} نقطة ({complexity})
+{assignees}
+{due_date}
+{estimated_time}
+
+💡 تركيز اليوم:
+{focus}
+
+🔗 {url}
+
+**التعليمات:**
+- استخدم بيانات المهمة لملء الفراغات
+- إذا لم تتوفر قيمة فاستبدلها بعبارة مثل "غير محدد"
+- اجعل جملة {focus} نصيحة عملية قصيرة تعتمد على الأولوية والمواعيد`,
+
+      task_status_changed_group: `أنت مساعد إشعارات. اكتب تحديث حالة بالعربية مستخدماً القالب.
+
+**القالب (التزم به تماماً):**
+🔄 تحديث حالة
+
+• المهمة: {task_name}
+• من: {before_status}
+• إلى: {after_status}
+• بواسطة: {user_name}
+
+💡 التأثير:
+{impact}
+
+📌 الخطوة التالية:
+{next_step}
+
+🔗 {url}
+
+**التعليمات:**
+- اعتمد على البيانات المتاحة لتوضيح التأثير والخطوة التالية
+- اجعل {impact} جملة أو جملتين بحد أقصى
+- اجعل {next_step} خطوة عملية محددة للفريق`,
+
+      task_completed_group: `أنت مساعد إشعارات. احتفل بإكمال المهمة بالعربية مستخدماً القالب.
+
+**القالب (التزم به تماماً):**
+✅ مهمة مكتملة
+
+• المهمة: {task_name}
+• أكملها: {user_name}
+• الوزن: {weight} نقطة ({complexity})
+{points}
+{badges}
+{shield}
+
+🎯 الأثر:
+{highlight}
+
+🔗 {url}
+
+**التعليمات:**
+- استخدم بيانات التحفيز لملء عناصر المكافآت (أكتب "لا يوجد" إذا غابت)
+- اجعل {highlight} يوضح قيمة الإنجاز أو الخطوة التالية للفريق`
     };
 
     return templates[templateType] || templates.assignment_dm;
@@ -1426,48 +1621,149 @@ class EnhancedNotificationService {
    * Build data message for AI
    */
   buildTemplateDataMessage(templateType, data) {
-    const { task, assignee, userName, gamificationResult } = data;
+    const { task, assignee, assignees = [], userName, gamificationResult, beforeStatus, afterStatus } = data;
     let msg = '**البيانات:**\n\n';
 
-    if (task) {
-      msg += `name: ${assignee?.name || userName}\n`;
-      msg += `task_name: ${task.name}\n`;
-      msg += `priority: ${task.priority_label || 'عادية'}\n`;
-      msg += `weight: ${task.ai_weight || 10}\n`;
-      msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+    switch (templateType) {
+      case 'assignment_dm': {
+        if (task) {
+          const dueInDays = this.calculateDueInDays(task);
+          msg += `name: ${assignee?.name || userName || 'عضو الفريق'}\n`;
+          msg += `task_name: ${task.name}\n`;
+          msg += `priority: ${task.priority_label || 'عادية'}\n`;
+          msg += `weight: ${task.ai_weight || 10}\n`;
+          msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+          msg += `estimated_time: ${task.ai_estimated_time ? `• الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️` : '• الوقت المتوقع: غير محدد'}\n`;
 
-      if (task.ai_estimated_time) {
-        msg += `estimated_time: • الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️\n`;
-      } else {
-        msg += `estimated_time: \n`;
+          if (typeof dueInDays === 'number') {
+            if (dueInDays <= 0) {
+              msg += 'due_date: • الموعد النهائي: اليوم\n';
+            } else {
+              msg += `due_date: • الموعد النهائي: بعد ${dueInDays} ${dueInDays === 1 ? 'يوم' : 'أيام'}\n`;
+            }
+          } else {
+            msg += 'due_date: • الموعد النهائي: غير محدد\n';
+          }
+
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
       }
 
-      if (task.due_date) {
-        const daysUntil = Math.ceil((new Date(parseInt(task.due_date)) - Date.now()) / (1000 * 60 * 60 * 24));
-        msg += `due_date: • الموعد النهائي: بعد ${daysUntil} ${daysUntil === 1 ? 'يوم' : 'أيام'}\n`;
-      } else {
-        msg += `due_date: \n`;
+      case 'completion_dm': {
+        if (task) {
+          msg += `name: ${assignee?.name || userName || 'عضو الفريق'}\n`;
+          msg += `task_name: ${task.name}\n`;
+        }
+
+        if (gamificationResult) {
+          msg += `points: ${gamificationResult.pointsEarned} نقطة\n`;
+
+          if (gamificationResult.newBadges?.length > 0) {
+            msg += `badges: ${gamificationResult.newBadges.length} أوسمة (${gamificationResult.newBadges.map(b => `${b.name} ${b.emoji || '⭐'}`).join(', ')})\n`;
+          } else {
+            msg += 'badges: لا يوجد\n';
+          }
+
+          if (gamificationResult.shieldUpgrade) {
+            msg += `shield: ترقية إلى ${gamificationResult.shieldUpgrade.to.name}\n`;
+          } else {
+            msg += 'shield: لا يوجد\n';
+          }
+        }
+
+        break;
       }
 
-      msg += `url: ${task.url}\n`;
-    }
+      case 'task_created_group': {
+        if (task) {
+          const dueInDays = this.calculateDueInDays(task);
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : null;
 
-    if (gamificationResult) {
-      msg += `points: ${gamificationResult.pointsEarned}\n`;
+          msg += `task_name: ${task.name}\n`;
+          msg += `priority: ${task.priority_label || 'عادية'}\n`;
+          msg += `weight: ${task.ai_weight || 10}\n`;
+          msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+          msg += `assignees: ${assigneeNames ? `• المكلفون: ${assigneeNames}` : '• المكلفون: لم يتم التعيين بعد'}\n`;
 
-      if (gamificationResult.newBadges?.length > 0) {
-        msg += `badges: • ${gamificationResult.newBadges.length} وسام جديد! 🏆\n`;
-        gamificationResult.newBadges.forEach(b => {
-          msg += `  - ${b.name} ${b.emoji || '⭐'}\n`;
-        });
-      } else {
-        msg += `badges: \n`;
+          if (typeof dueInDays === 'number') {
+            if (dueInDays <= 0) {
+              msg += 'due_date: • الموعد النهائي: اليوم\n';
+            } else {
+              msg += `due_date: • الموعد النهائي: بعد ${dueInDays} ${dueInDays === 1 ? 'يوم' : 'أيام'}\n`;
+            }
+          } else {
+            msg += 'due_date: • الموعد النهائي: غير محدد\n';
+          }
+
+          msg += `estimated_time: ${task.ai_estimated_time ? `• الوقت المتوقع: ${task.ai_estimated_time} دقيقة` : '• الوقت المتوقع: غير محدد'}\n`;
+          msg += `focus_context: priority=${task.priority_label || 'عادية'}, due_in_days=${typeof dueInDays === 'number' ? dueInDays : 'غير معروف'}, assignees=${assignees.length}, estimated_time=${task.ai_estimated_time || 0}\n`;
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
       }
 
-      if (gamificationResult.shieldUpgrade) {
-        msg += `shield: • ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
-      } else {
-        msg += `shield: \n`;
+      case 'task_status_changed_group': {
+        if (task) {
+          const dueInDays = this.calculateDueInDays(task);
+
+          msg += `task_name: ${task.name}\n`;
+          msg += `before_status: ${beforeStatus}\n`;
+          msg += `after_status: ${afterStatus}\n`;
+          msg += `user_name: ${userName}\n`;
+          msg += `priority: ${task.priority_label || 'عادية'}\n`;
+          msg += `assignees_count: ${Array.isArray(task.assignees) ? task.assignees.length : (task.assignee_ids ? (Array.isArray(task.assignee_ids) ? task.assignee_ids.length : 1) : 0)}\n`;
+
+          if (typeof dueInDays === 'number') {
+            msg += `due_in_days: ${dueInDays}\n`;
+          } else {
+            msg += 'due_in_days: غير محدد\n';
+          }
+
+          msg += `insight_hint: ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
+      }
+
+      case 'task_completed_group': {
+        if (task) {
+          msg += `task_name: ${task.name}\n`;
+          msg += `user_name: ${userName}\n`;
+          msg += `weight: ${task.ai_weight || 10}\n`;
+          msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+          msg += `points: ${gamificationResult?.pointsEarned ? `• النقاط: ${gamificationResult.pointsEarned} 🎯` : '• النقاط: لا يوجد'}\n`;
+
+          if (gamificationResult?.newBadges?.length > 0) {
+            msg += `badges: • الأوسمة: ${gamificationResult.newBadges.map(b => `${b.name} ${b.emoji || '⭐'}`).join(', ')}\n`;
+          } else {
+            msg += 'badges: • الأوسمة: لا يوجد\n';
+          }
+
+          if (gamificationResult?.shieldUpgrade) {
+            msg += `shield: • الدرع: ${gamificationResult.shieldUpgrade.to.name}\n`;
+          } else {
+            msg += 'shield: • الدرع: لا يوجد\n';
+          }
+
+          msg += `highlight_hint: ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
+      }
+
+      default: {
+        if (task) {
+          msg += `task_name: ${task.name}\n`;
+          msg += `priority: ${task.priority_label || 'عادية'}\n`;
+          msg += `weight: ${task.ai_weight || 10}\n`;
+        }
+
+        break;
       }
     }
 

@@ -71,7 +71,15 @@ const TRIGGER_CATEGORIES = {
 /**
  * Main webhook handler - routes to specific handlers
  */
-export async function handleWebhook(req, res) {
+async function processWebhook(req, res, options = {}) {
+  const {
+    forcedTrigger = null,
+    expectedTriggers = null,
+    requireCompletion = false,
+    requireAssigneeChange = false,
+    endpoint = 'universal'
+  } = options;
+
   try {
     // Extract webhook ID from URL (if provided)
     const webhookId = req.params.webhookId || 'default';
@@ -88,18 +96,20 @@ export async function handleWebhook(req, res) {
 
     // Handle ClickUp test ping
     if (body.body && body.body.includes('Test message')) {
-      logger.info('Received ClickUp webhook test ping', { webhookId });
-      return res.status(200).json({ success: true, message: 'Webhook endpoint is working!', webhookId });
+      logger.info('Received ClickUp webhook test ping', { webhookId, endpoint });
+      return res.status(200).json({ success: true, message: 'Webhook endpoint is working!', webhookId, endpoint });
     }
 
     // Handle ClickUp webhook challenge (initial setup)
     if (body.challenge) {
-      logger.info('Received ClickUp webhook challenge', { webhookId });
+      logger.info('Received ClickUp webhook challenge', { webhookId, endpoint });
       return res.status(200).json({ challenge: body.challenge });
     }
 
     // Handle automation webhook structure: {auto_id, trigger_id, date, payload}
     let event, taskId, taskData = null;
+    let originalEvent = null;
+    let isCompletedAutomation = false;
 
     if (body.auto_id && body.trigger_id && body.payload) {
       // This is an automation webhook - extract task from payload
@@ -112,13 +122,14 @@ export async function handleWebhook(req, res) {
       // 3. Otherwise it's a status change
 
       const taskStatus = taskData.status?.status?.toLowerCase().trim();
-      const isCompleted = taskStatus && TASK_STATUS.NON_OPEN.includes(taskStatus);
+      isCompletedAutomation = taskStatus && TASK_STATUS.NON_OPEN.includes(taskStatus);
 
-      if (isCompleted) {
+      if (isCompletedAutomation) {
         // Task is completed - always handle as status change
         // (handleStatusChanged will emit TASK_COMPLETED event)
         event = TRIGGER_TYPES.STATUS_CHANGED;
-        logger.debug('Completed task detected in automation webhook', { taskId, status: taskStatus });
+        originalEvent = event;
+        logger.debug('Completed task detected in automation webhook', { taskId, status: taskStatus, endpoint });
       } else {
         // Not completed - check if it's new or existing task
         const dateCreated = taskData.date_created ? parseInt(taskData.date_created) : 0;
@@ -130,6 +141,7 @@ export async function handleWebhook(req, res) {
         } else {
           event = TRIGGER_TYPES.STATUS_CHANGED;
         }
+        originalEvent = event;
       }
 
       logger.info('Automation webhook received', {
@@ -138,13 +150,15 @@ export async function handleWebhook(req, res) {
         triggerId: body.trigger_id,
         taskId,
         taskName: taskData.name,
-        status: taskStatus,
+        status: taskData.status?.status,
         detectedAs: event === TRIGGER_TYPES.TASK_CREATED ? 'NEW_TASK' :
-                    (isCompleted ? 'COMPLETED' : 'STATUS_CHANGE')
+                    (isCompletedAutomation ? 'COMPLETED' : 'STATUS_CHANGE'),
+        endpoint
       });
     } else {
       // Standard webhook structure: {event, task_id, ...}
       event = body.event;
+      originalEvent = event;
       taskId = body.task_id;
 
       if (!event || !taskId) {
@@ -153,12 +167,31 @@ export async function handleWebhook(req, res) {
           hasEvent: !!event,
           hasTaskId: !!taskId,
           bodyKeys: Object.keys(body),
-          bodyPreview: JSON.stringify(body).substring(0, 200)
+          bodyPreview: JSON.stringify(body).substring(0, 200),
+          endpoint
         });
         return res.status(400).json({ error: 'Missing event or task_id' });
       }
 
-      logger.info('Standard webhook received', { webhookId, event, taskId });
+      logger.info('Standard webhook received', { webhookId, event, taskId, endpoint });
+    }
+
+    if (forcedTrigger) {
+      event = forcedTrigger;
+    }
+
+    if (expectedTriggers) {
+      const matchesOriginal = originalEvent ? expectedTriggers.some(trigger => trigger.toLowerCase() === originalEvent.toLowerCase()) : false;
+      const matchesForced = event ? expectedTriggers.some(trigger => trigger.toLowerCase() === event.toLowerCase()) : false;
+      if (!matchesOriginal && !matchesForced) {
+        logger.info('Ignoring webhook due to event mismatch for endpoint', {
+          webhookId,
+          receivedEvent: originalEvent || event,
+          expectedTriggers,
+          endpoint
+        });
+        return res.status(202).json({ success: true, ignored: true, reason: 'event_mismatch', event: originalEvent || event, endpoint });
+      }
     }
 
     // Fetch complete task data from ClickUp API
@@ -168,7 +201,7 @@ export async function handleWebhook(req, res) {
 
     if (shouldFetchFromApi) {
       // Fetch complete task data from ClickUp API and store in database
-      logger.debug('Fetching complete task data from API', { taskId, reason: taskData ? 'incomplete payload' : 'no payload' });
+      logger.debug('Fetching complete task data from API', { taskId, reason: taskData ? 'incomplete payload' : 'no payload', endpoint });
       task = await enhancedClickUpService.fetchCompleteTaskData(taskId);
     } else {
       // Use task data from webhook payload - transform and store
@@ -176,9 +209,34 @@ export async function handleWebhook(req, res) {
       await databaseService.upsertTask(task);
     }
 
+    if (requireCompletion) {
+      const currentStatus = (task.status_name || task.status?.status || '').toLowerCase().trim();
+      if (!TASK_STATUS.NON_OPEN.includes(currentStatus)) {
+        logger.info('Completion endpoint received non-completed task', {
+          taskId,
+          status: currentStatus,
+          endpoint
+        });
+        return res.status(202).json({ success: true, ignored: true, reason: 'task_not_completed', status: currentStatus, endpoint });
+      }
+    }
+
     // Calculate AI weight if not already done
     if (!task.ai_weight) {
       await taskWeightingService.calculateTaskWeight(task);
+    }
+
+    const historyItem = body.history_items?.[0];
+
+    if (requireAssigneeChange) {
+      const afterAssignee = historyItem?.after?.assignee || historyItem?.assignee?.after || historyItem?.value?.after;
+      if (!afterAssignee) {
+        logger.info('Assignment endpoint received payload without assignee change', {
+          taskId,
+          endpoint
+        });
+        return res.status(202).json({ success: true, ignored: true, reason: 'no_assignee_change', endpoint });
+      }
     }
 
     // Store event in database
@@ -187,13 +245,14 @@ export async function handleWebhook(req, res) {
       task_id: taskId,
       trigger_type: event,
       trigger_category: categorizeTrigger(event),
-      changed_by_id: body.history_items?.[0]?.user?.id?.toString() || taskData?.creator?.id?.toString() || null,
-      changed_by_username: body.history_items?.[0]?.user?.username || taskData?.creator?.username || null,
-      changed_at: body.history_items?.[0]?.date ? parseInt(body.history_items[0].date) : (body.date ? new Date(body.date).getTime() : Date.now()),
-      field_name: body.history_items?.[0]?.field || null,
-      prev_value: body.history_items?.[0]?.before ? JSON.stringify(body.history_items[0].before) : null,
-      next_value: body.history_items?.[0]?.after ? JSON.stringify(body.history_items[0].after) : null,
-      raw_payload: JSON.stringify(body)
+      changed_by_id: historyItem?.user?.id?.toString() || taskData?.creator?.id?.toString() || null,
+      changed_by_username: historyItem?.user?.username || taskData?.creator?.username || null,
+      changed_at: historyItem?.date ? parseInt(historyItem.date) : (body.date ? new Date(body.date).getTime() : Date.now()),
+      field_name: historyItem?.field || null,
+      prev_value: historyItem?.before ? JSON.stringify(historyItem.before) : null,
+      next_value: historyItem?.after ? JSON.stringify(historyItem.after) : null,
+      raw_payload: JSON.stringify(body),
+      trigger_source: endpoint
     };
 
     // Store event in database (async for file database)
@@ -203,7 +262,8 @@ export async function handleWebhook(req, res) {
       } catch (dbError) {
         logger.warn('Failed to store event in database', {
           error: dbError.message,
-          event_id: eventData.event_id
+          event_id: eventData.event_id,
+          endpoint
         });
       }
     }
@@ -215,20 +275,60 @@ export async function handleWebhook(req, res) {
       logger.error('Event handler failed', {
         event,
         error: handlerError.message,
-        stack: handlerError.stack
+        stack: handlerError.stack,
+        endpoint
       });
       // Continue anyway - don't fail the webhook
     }
 
-    res.status(200).json({ success: true, event, taskId, webhookId });
+    res.status(200).json({ success: true, event, taskId, webhookId, endpoint });
   } catch (error) {
     logger.error('Webhook handling error', {
       error: error.message,
       stack: error.stack,
-      body: req.body ? JSON.stringify(req.body).substring(0, 500) : 'no body'
+      body: req.body ? JSON.stringify(req.body).substring(0, 500) : 'no body',
+      endpoint
     });
     res.status(500).json({ error: 'Internal server error', message: error.message });
   }
+}
+
+export async function handleWebhook(req, res) {
+  return processWebhook(req, res, { endpoint: 'universal' });
+}
+
+export async function handleTaskCreatedWebhook(req, res) {
+  return processWebhook(req, res, {
+    endpoint: 'task_created',
+    forcedTrigger: TRIGGER_TYPES.TASK_CREATED,
+    expectedTriggers: [TRIGGER_TYPES.TASK_CREATED]
+  });
+}
+
+export async function handleTaskAssignedWebhook(req, res) {
+  return processWebhook(req, res, {
+    endpoint: 'task_assigned',
+    forcedTrigger: TRIGGER_TYPES.ASSIGNEE_ADDED,
+    expectedTriggers: [TRIGGER_TYPES.ASSIGNEE_ADDED],
+    requireAssigneeChange: true
+  });
+}
+
+export async function handleStatusChangedWebhook(req, res) {
+  return processWebhook(req, res, {
+    endpoint: 'status_changed',
+    forcedTrigger: TRIGGER_TYPES.STATUS_CHANGED,
+    expectedTriggers: [TRIGGER_TYPES.STATUS_CHANGED]
+  });
+}
+
+export async function handleTaskCompletedWebhook(req, res) {
+  return processWebhook(req, res, {
+    endpoint: 'task_completed',
+    forcedTrigger: TRIGGER_TYPES.STATUS_CHANGED,
+    expectedTriggers: [TRIGGER_TYPES.STATUS_CHANGED],
+    requireCompletion: true
+  });
 }
 
 /**
@@ -781,6 +881,10 @@ function translateComplexity(complexity) {
 
 export default {
   handleWebhook,
+  handleTaskCreatedWebhook,
+  handleTaskAssignedWebhook,
+  handleStatusChangedWebhook,
+  handleTaskCompletedWebhook,
   TRIGGER_TYPES,
   TRIGGER_CATEGORIES
 };

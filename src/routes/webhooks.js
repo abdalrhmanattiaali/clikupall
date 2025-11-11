@@ -10,20 +10,18 @@ import enhancedWebhookController from '../controllers/enhancedWebhookController.
 const router = express.Router();
 
 /**
+ * Dedicated ClickUp webhook endpoints for mission-critical flows
+ * توفر مسارات منفصلة لكل حدث مهم لتفادي تعارض الإشعارات
+ */
+router.post('/clickup/task-created/:webhookId?', enhancedWebhookController.handleTaskCreatedWebhook);
+router.post('/clickup/task-assigned/:webhookId?', enhancedWebhookController.handleTaskAssignedWebhook);
+router.post('/clickup/status-changed/:webhookId?', enhancedWebhookController.handleStatusChangedWebhook);
+router.post('/clickup/task-completed/:webhookId?', enhancedWebhookController.handleTaskCompletedWebhook);
+
+/**
  * POST /webhooks/clickup/:webhookId?
  * Universal ClickUp webhook handler for ALL events (20+ events)
- * Use this endpoint for all ClickUp webhooks
- *
- * Supported events:
- * - Task Management: created, updated, deleted, assignee add/remove, status, priority, etc.
- * - Dates & Time: due date, start date, time tracked
- * - Checklists: item resolved, all resolved
- * - Subtasks: created, all resolved
- * - Comments: posted, updated
- *
- * URL formats:
- * - /webhooks/clickup (without ID)
- * - /webhooks/clickup/your-webhook-id (with custom ID for tracking)
+ * يستخدم عند الحاجة لمعالجة كل الأحداث في مسار واحد
  */
 router.post('/clickup/:webhookId?', enhancedWebhookController.handleWebhook);
 router.post('/clickup', enhancedWebhookController.handleWebhook);

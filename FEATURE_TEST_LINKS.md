@@ -93,6 +93,30 @@ curl -X POST http://localhost:5014/webhooks/clickup/task-completed/demo \
   }'
 ```
 
+#### 🚫 إلغاء المهمة (يجب أن يُعامل كتغيير حالة فقط)
+```bash
+curl -X POST http://localhost:5014/webhooks/clickup/status-changed/demo \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event": "taskStatusUpdated",
+    "task_id": "TASK_ID_HERE",
+    "history_items": [{
+      "field": "status",
+      "before": {"status": "IN PROGRESS", "status_type": "in progress"},
+      "after": {"status": "CANCELLED", "status_type": "cancelled"},
+      "user": {"username": "Team Lead"}
+    }],
+    "payload": {
+      "id": "TASK_ID_HERE",
+      "name": "مراجعة مستندات العميل",
+      "status": {"status": "CANCELLED", "type": "cancelled"},
+      "assignees": [{"id": "123", "username": "Abd Al Rahman", "email": "abd@example.com"}],
+      "date_created": "1700000000000",
+      "date_updated": "1700000600000"
+    }
+  }'
+```
+
 > ✳️ استبدل `TASK_ID_HERE` بمعرّف حقيقي من ClickUp كي يستطيع النظام تحميل البيانات التفصيلية إن لزم.
 
 ## 2. التحقق من الإشعارات | Notification Verification
@@ -132,6 +156,8 @@ curl -X POST http://localhost:5014/webhooks/clickup/task-completed/demo \
 - [ ] رسالة تغيير الحالة تصل للقروب باللغة الصحيحة وتتضمن الحالة السابقة والجديدة.
 - [ ] رسالة الإكمال تحتوي نقاط التحفيز والأوسمة الجديدة (إن وُجدت).
 - [ ] لا تصل رسالة تكليف عند مجرد تغيير الحالة إلى «مكتمل».
+- [ ] رسائل (إنشاء/تعيين/تعليق/تعليق) توضّح دائماً من نفّذ الحدث ومن هو المسؤول عن المهمة.
+- [ ] تغيير الحالة إلى «cancelled» لا يمنح نقاطاً ويظهر في القروب كإلغاء فقط مع حفظ الحالة السابقة.
 - [ ] لوحة التحفيز (النقاط/الأوسمة) تتحدّث بعد الإكمال.
 - [ ] تقارير الفريق يمكن استعراضها بدون أخطاء (`GET /test/scheduler-jobs`).
 

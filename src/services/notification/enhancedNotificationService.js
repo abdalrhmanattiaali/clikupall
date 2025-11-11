@@ -118,7 +118,9 @@ class EnhancedNotificationService {
    * Handle task created
    */
   async handleTaskCreated(data) {
-    const { task, assignees } = data;
+    const { task } = data;
+    const assignees = Array.isArray(data.assignees) ? data.assignees : [];
+    const createdBy = data.createdBy || 'غير معروف';
 
     // Check for duplicate
     if (this.isDuplicateNotification(task.id, 'created')) {
@@ -128,24 +130,25 @@ class EnhancedNotificationService {
     logger.info('📝 Processing TASK_CREATED event', {
       taskId: task.id,
       taskName: task.name,
-      assignees: assignees?.length || 0
+      assignees: assignees?.length || 0,
+      createdBy
     });
 
-    const groupMessage = await this.buildTaskCreatedMessage(task, assignees);
+    const groupMessage = await this.buildTaskCreatedMessage(task, assignees, createdBy);
 
     // Add to batch queue for group (not immediate)
     this.addToQueue({
       type: 'task_created',
       task,
       message: groupMessage,
-      data: { assignees }
+      data: { assignees, createdBy }
     });
 
     // Send DM to assignees immediately with personalized message
     if (assignees && assignees.length > 0) {
       for (const assignee of assignees) {
         if (assignee.phone) {
-          const dmMessage = await this.buildTaskAssignedDM(task, assignee);
+          const dmMessage = await this.buildTaskAssignedDM(task, assignee, createdBy);
           await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
       }
@@ -162,7 +165,11 @@ class EnhancedNotificationService {
    * Handle task completed
    */
   async handleTaskCompleted(data) {
-    const { task, userName, gamificationResult } = data;
+    const { task, gamificationResult } = data;
+    const actionedBy = data.actionedBy || data.userName || 'غير معروف';
+    const assignees = Array.isArray(data.assignees) && data.assignees.length > 0
+      ? data.assignees
+      : this.getAssigneesFromTask(task);
 
     // Check for duplicate
     if (this.isDuplicateNotification(task.id, 'completed')) {
@@ -172,27 +179,27 @@ class EnhancedNotificationService {
     logger.info('✅ Processing TASK_COMPLETED event', {
       taskId: task.id,
       taskName: task.name,
-      userName,
+      actionedBy,
+      assignees: assignees.map(a => a.name).join(', ') || 'غير محدد',
       points: gamificationResult?.pointsEarned || 0
     });
 
-    const groupMessage = await this.buildTaskCompletedMessage(task, userName, gamificationResult);
+    const groupMessage = await this.buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult);
 
     // Add to batch queue for group
     this.addToQueue({
       type: 'task_completed',
       task,
       message: groupMessage,
-      data: { userName, gamificationResult }
+      data: { actionedBy, assignees, gamificationResult, userName: actionedBy }
     });
 
     // Send DM to task completer with achievements and tips
-    const assignees = this.getAssigneesFromTask(task);
     if (assignees.length > 0) {
       for (const assignee of assignees) {
         if (assignee.phone) {
           const completionMeta = gamificationResult || { pointsEarned: 0, newBadges: [], shieldUpgrade: null };
-          const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta);
+          const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta, actionedBy);
           await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
       }
@@ -210,7 +217,8 @@ class EnhancedNotificationService {
    * Handle task assigned
    */
   async handleTaskAssigned(data) {
-    const { task, assignees, assignedBy } = data;
+    const { task, assignees } = data;
+    const assignedBy = data.assignedBy || 'غير معروف';
 
     if (!assignees || assignees.length === 0) {
       logger.debug('TASK_ASSIGNED event received but no assignees found');
@@ -240,7 +248,7 @@ class EnhancedNotificationService {
     // Send DM to newly assigned users
     for (const assignee of assignees) {
       if (assignee.phone) {
-        const dmMessage = await this.buildTaskAssignedDM(task, assignee);
+        const dmMessage = await this.buildTaskAssignedDM(task, assignee, assignedBy);
         await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
       }
     }
@@ -273,7 +281,10 @@ class EnhancedNotificationService {
    * Handle task status changed
    */
   async handleTaskStatusChanged(data) {
-    const { task, beforeStatus, afterStatus, userName } = data;
+    const { task, beforeStatus, afterStatus } = data;
+    const actionedBy = data.actionedBy || data.userName || 'غير معروف';
+    const assignees = Array.isArray(data.assignees) ? data.assignees : [];
+    const transitionType = data.transitionType || 'progress';
 
     const normalizedBefore = (beforeStatus || '').toString().trim().toLowerCase();
     const normalizedAfter = (afterStatus || '').toString().trim().toLowerCase();
@@ -291,17 +302,19 @@ class EnhancedNotificationService {
       taskName: task.name,
       beforeStatus,
       afterStatus,
-      userName
+      actionedBy,
+      assignees: assignees.map(a => a.name).join(', ') || 'غير محدد',
+      transitionType
     });
 
-    const message = await this.buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName);
+    const message = await this.buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, actionedBy, assignees, transitionType);
 
     // Always queue for batch (not immediate)
     this.addToQueue({
       type: 'status_changed',
       task,
       message,
-      data: { beforeStatus, afterStatus, userName }
+      data: { beforeStatus, afterStatus, userName: actionedBy, actionedBy, assignees, transitionType }
     });
 
     logger.debug('Status change queued for batch', {
@@ -684,10 +697,11 @@ class EnhancedNotificationService {
   /**
    * Build task created message
    */
-  async buildTaskCreatedMessage(task, assignees) {
+  async buildTaskCreatedMessage(task, assignees, createdBy = 'غير معروف') {
     const aiMessage = await this.generateNotificationWithTemplate('task_created_group', {
       task,
-      assignees
+      assignees,
+      createdBy
     });
 
     if (aiMessage) {
@@ -699,6 +713,7 @@ class EnhancedNotificationService {
 
     let message = `📝 *مهمة جديدة*\n\n`;
     message += `*الاسم:* ${task.name}\n`;
+    message += `*أنشأها:* ${createdBy}\n`;
     message += `*الأولوية:* ${task.priority_label || 'عادية'}\n`;
     message += `*الوزن AI:* ${aiWeight} نقطة (${this.translateComplexity(complexity)})\n`;
 
@@ -724,10 +739,11 @@ class EnhancedNotificationService {
   /**
    * Build task completed message
    */
-  async buildTaskCompletedMessage(task, userName, gamificationResult) {
+  async buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult) {
     const aiMessage = await this.generateNotificationWithTemplate('task_completed_group', {
       task,
-      userName,
+      assignees,
+      actionedBy,
       gamificationResult
     });
 
@@ -739,8 +755,13 @@ class EnhancedNotificationService {
     const complexity = task.ai_complexity || 'medium';
 
     let message = `✅ *مهمة مكتملة!*\n\n`;
+    const assigneeNames = assignees && assignees.length > 0
+      ? assignees.map(a => a.name).join(', ')
+      : 'غير محدد';
+
     message += `*المهمة:* ${task.name}\n`;
-    message += `*أكملها:* ${userName}\n`;
+    message += `*المكلفون:* ${assigneeNames}\n`;
+    message += `*تم الإغلاق بواسطة:* ${actionedBy}\n`;
     message += `*الوزن:* ${aiWeight} نقطة 💎 (${this.translateComplexity(complexity)})\n`;
 
     if (gamificationResult) {
@@ -761,12 +782,14 @@ class EnhancedNotificationService {
     return message;
   }
 
-  async buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName) {
+  async buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName, assignees = [], transitionType = 'progress') {
     const aiMessage = await this.generateNotificationWithTemplate('task_status_changed_group', {
       task,
       beforeStatus,
       afterStatus,
-      userName
+      userName,
+      assignees,
+      transitionType
     });
 
     if (aiMessage) {
@@ -775,12 +798,21 @@ class EnhancedNotificationService {
 
     const prettyBefore = this.formatStatusLabel(beforeStatus);
     const prettyAfter = this.formatStatusLabel(afterStatus);
+    const assigneeNames = assignees && assignees.length > 0
+      ? assignees.map(a => a.name).join(', ')
+      : 'غير محدد';
 
     let message = `🔄 *تغيير حالة المهمة*\n\n`;
     message += `*المهمة:* ${task.name}\n`;
     message += `*من:* ${prettyBefore}\n`;
     message += `*إلى:* ${prettyAfter}\n`;
+    message += `*المكلفون:* ${assigneeNames}\n`;
     message += `*بواسطة:* ${userName}\n`;
+
+    if (transitionType === 'cancelled') {
+      message += `*نوع الإجراء:* إلغاء المهمة 🚫\n`;
+    }
+
     message += `\n💡 ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
     message += `\n🔗 ${task.url}`;
 
@@ -816,11 +848,12 @@ class EnhancedNotificationService {
   /**
    * Build DM for task assignment (AI-powered with strict template)
    */
-  async buildTaskAssignedDM(task, assignee) {
+  async buildTaskAssignedDM(task, assignee, assignedBy = 'غير معروف') {
     // Try AI template-based generation first
     const aiMessage = await this.generateNotificationWithTemplate('assignment_dm', {
       task,
-      assignee
+      assignee,
+      assignedBy
     });
 
     if (aiMessage) {
@@ -838,6 +871,7 @@ class EnhancedNotificationService {
     message += `• الأولوية: ${task.priority_label || 'عادية'}\n`;
     message += `• الوزن: ${aiWeight} نقطة 💎\n`;
     message += `• التعقيد: ${this.translateComplexity(complexity)}\n`;
+    message += `• التكليف بواسطة: ${assignedBy}\n`;
 
     if (task.ai_estimated_time) {
       message += `• الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️\n`;
@@ -862,12 +896,13 @@ class EnhancedNotificationService {
   /**
    * Build DM for task completion (AI-powered with strict template)
    */
-  async buildCompletionDM(task, assignee, gamificationResult) {
+  async buildCompletionDM(task, assignee, gamificationResult, actionedBy = 'غير معروف') {
     // Try AI template-based generation first
     const aiMessage = await this.generateNotificationWithTemplate('completion_dm', {
       task,
       assignee,
-      gamificationResult
+      gamificationResult,
+      actionedBy
     });
 
     if (aiMessage) {
@@ -878,7 +913,8 @@ class EnhancedNotificationService {
 
     // Fallback: default message
     let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
-    message += `✅ لقد أكملت: *${task.name}*\n\n`;
+    message += `✅ لقد أكملت: *${task.name}*\n`;
+    message += `👤 تم تعليم المهمة كمكتملة بواسطة: ${actionedBy}\n\n`;
 
     message += `*المكافآت:*\n`;
     message += `• ${safeGamification.pointsEarned || 0} نقطة 🎯\n`;
@@ -1108,17 +1144,57 @@ class EnhancedNotificationService {
     }
 
     // Dynamically import team config
-    const { findMemberById } = require('../../config/team.js');
+    const { findMemberById, findMemberByEmail } = require('../../config/team.js');
 
-    return assigneeIds.map(id => {
-      const member = findMemberById(parseInt(id));
-      return member ? {
-        id: member.id,
-        name: member.name,
-        phone: member.phone,
-        email: member.email
-      } : null;
-    }).filter(Boolean);
+    const resolved = new Map();
+
+    const addAssignee = (member, fallback = {}) => {
+      const key = member?.id
+        ?? (typeof fallback.id !== 'undefined' ? fallback.id : null)
+        ?? fallback.email
+        ?? fallback.username
+        ?? `external_${resolved.size}`;
+
+      if (resolved.has(key)) {
+        return;
+      }
+
+      const fallbackName = fallback.username
+        || fallback.name
+        || fallback.email
+        || (fallback.id ? `المستخدم ${fallback.id}` : 'عضو غير معروف');
+
+      resolved.set(key, {
+        id: member ? Number(member.id) : null,
+        externalId: typeof fallback.id !== 'undefined' ? fallback.id : null,
+        name: member?.name || fallbackName,
+        phone: member?.phone || null,
+        email: member?.email || fallback.email || null
+      });
+    };
+
+    if (Array.isArray(task.assignees)) {
+      task.assignees.forEach(rawAssignee => {
+        const rawId = Number(rawAssignee?.id);
+        const member = Number.isFinite(rawId) ? findMemberById(rawId) : null
+          || (rawAssignee?.email ? findMemberByEmail(rawAssignee.email) : null);
+        addAssignee(member, rawAssignee);
+      });
+    }
+
+    assigneeIds.forEach(rawId => {
+      const numericId = Number(rawId);
+      if (!Number.isFinite(numericId)) {
+        return;
+      }
+
+      const member = findMemberById(numericId);
+      if (member) {
+        addAssignee(member, { id: numericId });
+      }
+    });
+
+    return Array.from(resolved.values());
   }
 
   // ==================== QUEUE MANAGEMENT ====================
@@ -1225,13 +1301,16 @@ class EnhancedNotificationService {
       finalMessage += `🎉 *مهام مكتملة (${byType.task_completed.length}):*\n\n`;
       byType.task_completed.forEach((item, i) => {
         if (i < 5) { // Limit to 5
-          const userName = item.data?.userName || 'Unknown';
+          const actionedBy = item.data?.actionedBy || item.data?.userName || 'غير معروف';
+          const assignees = Array.isArray(item.data?.assignees) ? item.data.assignees : [];
+          const ownerNames = assignees.length > 0 ? assignees.map(a => a.name).join('، ') : 'غير محدد';
           const points = item.data?.gamificationResult?.pointsEarned || 0;
           const badges = item.data?.gamificationResult?.newBadges?.length || 0;
           const weight = item.task.ai_weight || 10;
 
           finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
-          finalMessage += `     ✅ أكملها: ${userName}\n`;
+          finalMessage += `     👥 المكلفون: ${ownerNames}\n`;
+          finalMessage += `     👤 الإجراء بواسطة: ${actionedBy}\n`;
           finalMessage += `     💎 ${weight} نقطة • 🎯 كسب ${points} نقطة`;
           if (badges > 0) {
             finalMessage += ` • 🏆 ${badges} وسام`;
@@ -1254,6 +1333,7 @@ class EnhancedNotificationService {
           const priority = item.task.priority_label || 'عادية';
           const complexity = item.task.ai_complexity || 'medium';
           const complexityAr = this.translateComplexity(complexity);
+          const createdBy = item.data?.createdBy || 'غير معروف';
 
           finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
 
@@ -1263,6 +1343,8 @@ class EnhancedNotificationService {
           } else {
             finalMessage += `     👥 غير مسندة\n`;
           }
+
+          finalMessage += `     🧑‍💼 أنشأها: ${createdBy}\n`;
 
           finalMessage += `     🔸 ${priority} • 💎 ${weight} نقطة • ${complexityAr}\n\n`;
         }
@@ -1302,11 +1384,19 @@ class EnhancedNotificationService {
       byType.status_changed.forEach((item, i) => {
         if (i < 5) {
           const data = item.data || {};
-          const userName = data.userName || 'Unknown';
+          const actionedBy = data.actionedBy || data.userName || 'غير معروف';
+          const assignees = Array.isArray(data.assignees) ? data.assignees : [];
+          const ownerNames = assignees.length > 0 ? assignees.map(a => a.name).join('، ') : 'غير محدد';
+          const transitionType = data.transitionType || 'progress';
 
           finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
           finalMessage += `     ${data.beforeStatus} ➜ ${data.afterStatus}\n`;
-          finalMessage += `     👤 ${userName}\n\n`;
+          finalMessage += `     👥 المكلفون: ${ownerNames}\n`;
+          finalMessage += `     👤 بواسطة: ${actionedBy}`;
+          if (transitionType === 'cancelled') {
+            finalMessage += ` • 🚫 إلغاء`;
+          }
+          finalMessage += `\n\n`;
         }
       });
       if (byType.status_changed.length > 5) {
@@ -1619,6 +1709,7 @@ class EnhancedNotificationService {
 • الأولوية: {priority}
 • الوزن: {weight} نقطة 💎
 • التعقيد: {complexity}
+• التكليف بواسطة: {assigned_by}
 {estimated_time}
 {due_date}
 
@@ -1640,6 +1731,7 @@ class EnhancedNotificationService {
 🎉 أحسنت {name}!
 
 ✅ لقد أكملت: {task_name}
+👤 تم تعليم المهمة بواسطة: {actioned_by}
 
 المكافآت:
 • {points} نقطة 🎯
@@ -1662,9 +1754,10 @@ class EnhancedNotificationService {
 📝 مهمة جديدة
 
 • الاسم: {task_name}
+• أنشأها: {creator_name}
 • الأولوية: {priority}
 • الوزن: {weight} نقطة ({complexity})
-{assignees}
+• المكلفون: {assignee_names}
 {due_date}
 {estimated_time}
 
@@ -1687,6 +1780,8 @@ class EnhancedNotificationService {
 • من: {before_status}
 • إلى: {after_status}
 • بواسطة: {user_name}
+• المكلفون: {assignee_names}
+{transition_note}
 
 💡 التأثير:
 {impact}
@@ -1707,7 +1802,8 @@ class EnhancedNotificationService {
 ✅ مهمة مكتملة
 
 • المهمة: {task_name}
-• أكملها: {user_name}
+• المكلفون: {assignee_names}
+• أغلقها: {actioned_by}
 • الوزن: {weight} نقطة ({complexity})
 {points}
 {badges}
@@ -1730,7 +1826,19 @@ class EnhancedNotificationService {
    * Build data message for AI
    */
   buildTemplateDataMessage(templateType, data) {
-    const { task, assignee, assignees = [], userName, gamificationResult, beforeStatus, afterStatus } = data;
+    const {
+      task,
+      assignee,
+      assignees = [],
+      userName,
+      gamificationResult,
+      beforeStatus,
+      afterStatus,
+      createdBy,
+      actionedBy,
+      assignedBy,
+      transitionType
+    } = data;
     let msg = '**البيانات:**\n\n';
 
     switch (templateType) {
@@ -1742,6 +1850,7 @@ class EnhancedNotificationService {
           msg += `priority: ${task.priority_label || 'عادية'}\n`;
           msg += `weight: ${task.ai_weight || 10}\n`;
           msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+          msg += `assigned_by: ${assignedBy || userName || 'غير معروف'}\n`;
           msg += `estimated_time: ${task.ai_estimated_time ? `• الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️` : '• الوقت المتوقع: غير محدد'}\n`;
 
           if (typeof dueInDays === 'number') {
@@ -1766,6 +1875,8 @@ class EnhancedNotificationService {
           msg += `task_name: ${task.name}\n`;
         }
 
+        msg += `actioned_by: ${actionedBy || userName || 'غير معروف'}\n`;
+
         if (gamificationResult) {
           msg += `points: ${gamificationResult.pointsEarned} نقطة\n`;
 
@@ -1788,13 +1899,14 @@ class EnhancedNotificationService {
       case 'task_created_group': {
         if (task) {
           const dueInDays = this.calculateDueInDays(task);
-          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : null;
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : 'غير محدد';
 
           msg += `task_name: ${task.name}\n`;
+          msg += `creator_name: ${createdBy || userName || 'غير معروف'}\n`;
           msg += `priority: ${task.priority_label || 'عادية'}\n`;
           msg += `weight: ${task.ai_weight || 10}\n`;
           msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
-          msg += `assignees: ${assigneeNames ? `• المكلفون: ${assigneeNames}` : '• المكلفون: لم يتم التعيين بعد'}\n`;
+          msg += `assignee_names: ${assigneeNames}\n`;
 
           if (typeof dueInDays === 'number') {
             if (dueInDays <= 0) {
@@ -1817,12 +1929,21 @@ class EnhancedNotificationService {
       case 'task_status_changed_group': {
         if (task) {
           const dueInDays = this.calculateDueInDays(task);
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : 'غير محدد';
+          let transitionNote = 'تحديث تقدم';
+          if (transitionType === 'cancelled') {
+            transitionNote = '🚫 إلغاء المهمة';
+          } else if (transitionType === 'closed') {
+            transitionNote = '✅ انتقال إلى حالة منجزة';
+          }
 
           msg += `task_name: ${task.name}\n`;
           msg += `before_status: ${beforeStatus}\n`;
           msg += `after_status: ${afterStatus}\n`;
           msg += `user_name: ${userName}\n`;
           msg += `priority: ${task.priority_label || 'عادية'}\n`;
+          msg += `assignee_names: ${assigneeNames}\n`;
+          msg += `transition_note: ${transitionNote}\n`;
           msg += `assignees_count: ${Array.isArray(task.assignees) ? task.assignees.length : (task.assignee_ids ? (Array.isArray(task.assignee_ids) ? task.assignee_ids.length : 1) : 0)}\n`;
 
           if (typeof dueInDays === 'number') {
@@ -1840,8 +1961,10 @@ class EnhancedNotificationService {
 
       case 'task_completed_group': {
         if (task) {
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : 'غير محدد';
           msg += `task_name: ${task.name}\n`;
-          msg += `user_name: ${userName}\n`;
+          msg += `assignee_names: ${assigneeNames}\n`;
+          msg += `actioned_by: ${actionedBy || userName || 'غير معروف'}\n`;
           msg += `weight: ${task.ai_weight || 10}\n`;
           msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
           msg += `points: ${gamificationResult?.pointsEarned ? `• النقاط: ${gamificationResult.pointsEarned} 🎯` : '• النقاط: لا يوجد'}\n`;

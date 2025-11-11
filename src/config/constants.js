@@ -67,6 +67,30 @@ export const TASK_STATUS = {
   ]
 };
 
+export const TASK_STATUS_CANCELLATIONS = {
+  EXACT: [
+    'canceled',
+    'cancelled',
+    'إلغاء',
+    'ملغاة',
+    'ملغى',
+    'ملغاه',
+    'مُلغاة',
+    'مُلغى'
+  ],
+  KEYWORDS: [
+    'cancel',
+    'canceled',
+    'cancelled',
+    'ملغ',
+    'الغاء'
+  ],
+  TYPES: [
+    'cancelled',
+    'canceled'
+  ]
+};
+
 export function normalizeStatusName(status) {
   if (!status) {
     return '';
@@ -100,6 +124,28 @@ export function isNonOpenStatus(statusName = '', statusType = '') {
   }
 
   return TASK_STATUS.NON_OPEN_KEYWORDS.some(keyword => normalizedStatus.includes(keyword));
+}
+
+export function isCancellationStatus(statusName = '', statusType = '') {
+  const normalizedType = statusType
+    ? statusType.toString().trim().toLowerCase()
+    : '';
+
+  if (normalizedType && TASK_STATUS_CANCELLATIONS.TYPES.some(type => normalizedType.includes(type))) {
+    return true;
+  }
+
+  const normalizedStatus = normalizeStatusName(statusName);
+
+  if (!normalizedStatus) {
+    return false;
+  }
+
+  if (TASK_STATUS_CANCELLATIONS.EXACT.includes(normalizedStatus)) {
+    return true;
+  }
+
+  return TASK_STATUS_CANCELLATIONS.KEYWORDS.some(keyword => normalizedStatus.includes(keyword));
 }
 
 /**

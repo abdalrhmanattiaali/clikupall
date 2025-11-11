@@ -11,7 +11,7 @@ import taskWeightingService from '../services/ai/taskWeightingService.js';
 import gamificationService from '../services/gamification/gamificationService.js';
 import databaseService from '../database/index.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
-import { isNonOpenStatus } from '../config/constants.js';
+import { isNonOpenStatus, isCancellationStatus } from '../config/constants.js';
 
 // Event trigger types mapping
 const TRIGGER_TYPES = {
@@ -555,7 +555,7 @@ async function routeToHandler(event, body, task, context = {}) {
   const historyItem = body.history_items?.[0];
 
   // Get user who made the change - try multiple sources
-  let changedBy = 'Unknown';
+  let changedBy = 'غير معروف';
   if (historyItem?.user?.username) {
     changedBy = historyItem.user.username;
   } else if (task.creator_username) {
@@ -679,14 +679,16 @@ async function handleTaskCreated(task, body, context = {}) {
   }
 
   const assignees = getAssigneesWithInfo(task);
+  const createdBy = context.changedBy || task.creator_username || 'غير معروف';
 
   // Emit event for notification service to handle
-  eventBus.emitEvent(EVENTS.TASK_CREATED, { task, assignees });
+  eventBus.emitEvent(EVENTS.TASK_CREATED, { task, assignees, createdBy });
 
   logger.success('Task created event emitted', {
     taskId: task.id,
     aiWeight: task.ai_weight || 10,
-    assignees: assignees.length
+    assignees: assignees.length,
+    createdBy
   });
 }
 
@@ -749,6 +751,7 @@ async function handleAssigneeRemoved(task, historyItem, changedBy) {
  * Handle status changed (including completion)
  */
 async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
+  const assignees = getAssigneesWithInfo(task);
   const afterInfo = extractStatusInfo(
     historyItem?.after,
     historyItem?.after?.status,
@@ -765,10 +768,14 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
   );
 
   if ((!beforeInfo || !beforeInfo.name) && context.previousTask) {
-    beforeInfo = extractStatusInfo({
-      status: context.previousTask.status_name,
-      status_type: context.previousTask.status_type
-    });
+    const previousStatus = context.previousTask.status_name || context.previousTask.status?.status;
+    const previousStatusType = context.previousTask.status_type || context.previousTask.status?.type;
+    if (previousStatus) {
+      beforeInfo = {
+        name: previousStatus,
+        type: previousStatusType || null
+      };
+    }
   }
 
   if ((!beforeInfo || !beforeInfo.name) && task.id) {
@@ -797,31 +804,41 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
     reroutedFromCreation: context.reroutedFromCreation || false
   });
 
+  const actionedBy = changedBy || 'غير معروف';
   const isComplete = isNonOpenStatus(afterStatus, afterStatusType);
+  const isCancelled = isCancellationStatus(afterStatus, afterStatusType);
+  const completionTarget = assignees[0] || null;
 
-  if (isComplete) {
-    let userId = null;
-    if (task.assignee_ids && task.assignee_ids.length > 0) {
-      userId = typeof task.assignee_ids === 'string'
-        ? JSON.parse(task.assignee_ids)[0]
-        : task.assignee_ids[0];
-    }
-
+  if (isComplete && !isCancelled) {
     let gamificationResult = null;
-    if (userId) {
+    const completionMemberId = completionTarget?.id;
+    const numericCompletionId = completionMemberId !== null && completionMemberId !== undefined
+      ? Number(completionMemberId)
+      : NaN;
+
+    if (Number.isFinite(numericCompletionId)) {
       try {
-        gamificationResult = await gamificationService.processCompletedTask(task, userId);
+        gamificationResult = await gamificationService.processCompletedTask(task, numericCompletionId);
       } catch (error) {
         logger.error('Gamification failed', { error: error.message });
       }
+    } else {
+      logger.warn('Unable to locate team member for completion credit', {
+        taskId: task.id,
+        assignees: assignees.map(a => a.name)
+      });
     }
 
     eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
       task,
-      userName: changedBy,
+      actionedBy,
+      userName: actionedBy,
+      assignees,
       gamificationResult,
       beforeStatus,
-      afterStatus
+      afterStatus,
+      completionTargetId: completionTarget?.id || null,
+      completionTargetName: completionTarget?.name || null
     });
 
     logger.success('Task completed event emitted', {
@@ -829,22 +846,30 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       from: beforeStatus,
       to: afterStatus,
       aiWeight: task.ai_weight || 10,
-      points: gamificationResult?.pointsEarned
+      points: gamificationResult?.pointsEarned,
+      actionedBy,
+      creditedTo: completionTarget?.name || 'غير محدد'
     });
   } else {
     eventBus.emitEvent(EVENTS.TASK_STATUS_CHANGED, {
       task,
       beforeStatus,
       afterStatus,
-      userName: changedBy,
+      userName: actionedBy,
+      actionedBy,
       beforeStatusType,
-      afterStatusType
+      afterStatusType,
+      assignees,
+      transitionType: isCancelled ? 'cancelled' : (isComplete ? 'closed' : 'progress')
     });
 
     logger.success('Task status changed event emitted', {
       taskId: task.id,
       from: beforeStatus,
-      to: afterStatus
+      to: afterStatus,
+      actionedBy,
+      transition: isCancelled ? 'cancelled' : 'updated',
+      assignees: assignees.map(a => a.name)
     });
   }
 }
@@ -1128,15 +1153,57 @@ function getAssigneesWithInfo(task) {
     assigneeIds = [];
   }
 
-  return assigneeIds.map(id => {
-    const member = findMemberById(parseInt(id));
-    return member ? {
-      id: member.id,
-      name: member.name,
-      phone: member.phone,
-      email: member.email
-    } : null;
-  }).filter(Boolean);
+  const resolved = new Map();
+
+  const addAssignee = (member, fallback = {}) => {
+    const key = member?.id
+      ?? (typeof fallback.id !== 'undefined' ? fallback.id : null)
+      ?? fallback.email
+      ?? fallback.username
+      ?? `external_${resolved.size}`;
+
+    if (resolved.has(key)) {
+      return;
+    }
+
+    const fallbackName = fallback.username
+      || fallback.name
+      || fallback.email
+      || (fallback.id ? `المستخدم ${fallback.id}` : 'عضو غير معروف');
+
+    const entry = {
+      id: member ? Number(member.id) : null,
+      externalId: typeof fallback.id !== 'undefined' ? fallback.id : null,
+      name: member?.name || fallbackName,
+      phone: member?.phone || null,
+      email: member?.email || fallback.email || null
+    };
+
+    resolved.set(key, entry);
+  };
+
+  if (Array.isArray(task.assignees)) {
+    task.assignees.forEach(rawAssignee => {
+      const rawId = Number(rawAssignee?.id);
+      const member = Number.isFinite(rawId) ? findMemberById(rawId) : null
+        || (rawAssignee?.email ? findMemberByEmail(rawAssignee.email) : null);
+      addAssignee(member, rawAssignee);
+    });
+  }
+
+  assigneeIds.forEach(rawId => {
+    const numericId = Number(rawId);
+    if (!Number.isFinite(numericId)) {
+      return;
+    }
+
+    const member = findMemberById(numericId);
+    if (member) {
+      addAssignee(member, { id: numericId });
+    }
+  });
+
+  return Array.from(resolved.values());
 }
 
 /**

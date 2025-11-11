@@ -68,6 +68,120 @@ const TRIGGER_CATEGORIES = {
   COMMENTS: 'comments'
 };
 
+async function loadPreviousTaskState(taskId) {
+  if (!taskId) {
+    return null;
+  }
+
+  try {
+    if (typeof databaseService.getTaskAsync === 'function') {
+      return await databaseService.getTaskAsync(taskId);
+    }
+
+    if (typeof databaseService.getTask === 'function') {
+      return databaseService.getTask(taskId);
+    }
+  } catch (error) {
+    logger.warn('Failed to load previous task state', {
+      taskId,
+      error: error.message
+    });
+  }
+
+  return null;
+}
+
+function tryParseJson(value) {
+  if (!value || typeof value !== 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    return null;
+  }
+}
+
+function parseStatusSnapshot(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  if (typeof snapshot === 'string') {
+    return { name: snapshot, type: null };
+  }
+
+  if (typeof snapshot === 'object') {
+    if (snapshot.status || snapshot.status_name || snapshot.name || snapshot.value || snapshot.text) {
+      const name = snapshot.status || snapshot.status_name || snapshot.name || snapshot.value || snapshot.text;
+      const type = snapshot.status_type || snapshot.type || snapshot.category || snapshot.state || null;
+
+      return { name, type };
+    }
+
+    if (snapshot.after || snapshot.before) {
+      return parseStatusSnapshot(snapshot.after || snapshot.before);
+    }
+  }
+
+  return null;
+}
+
+function extractStatusInfo(...sources) {
+  for (const source of sources) {
+    const parsed = parseStatusSnapshot(source);
+    if (parsed && parsed.name) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+async function lookupPreviousStatusFromEvents(taskId) {
+  if (!taskId || typeof databaseService.getTaskEvents !== 'function') {
+    return null;
+  }
+
+  try {
+    const events = await databaseService.getTaskEvents(taskId, 10);
+
+    if (!Array.isArray(events) || events.length === 0) {
+      return null;
+    }
+
+    const orderedEvents = events
+      .map(event => ({
+        ...event,
+        __timestamp: event.changed_at || event.created_at || 0
+      }))
+      .sort((a, b) => a.__timestamp - b.__timestamp);
+
+    for (let index = orderedEvents.length - 1; index >= 0; index -= 1) {
+      if (index === orderedEvents.length - 1) {
+        continue; // Skip current event (most recent)
+      }
+
+      const event = orderedEvents[index];
+      const nextValue = tryParseJson(event.next_value);
+      const prevValue = tryParseJson(event.prev_value);
+      const info = extractStatusInfo(nextValue, prevValue);
+
+      if (info && info.name) {
+        return info;
+      }
+    }
+  } catch (error) {
+    logger.warn('Failed to inspect previous task events for status context', {
+      taskId,
+      error: error.message
+    });
+  }
+
+  return null;
+}
+
 /**
  * Main webhook handler - routes to specific handlers
  */
@@ -107,7 +221,9 @@ async function processWebhook(req, res, options = {}) {
     }
 
     // Handle automation webhook structure: {auto_id, trigger_id, date, payload}
-    let event, taskId, taskData = null;
+    let event, taskId;
+    let taskData = null;
+    let previousTask = null;
     let originalEvent = null;
     let isCompletedAutomation = false;
 
@@ -115,6 +231,8 @@ async function processWebhook(req, res, options = {}) {
       // This is an automation webhook - extract task from payload
       taskData = body.payload;
       taskId = taskData.id;
+
+      previousTask = await loadPreviousTaskState(taskId);
 
       // Determine event type with priority:
       // 1. Check if task is completed first (most important)
@@ -161,6 +279,8 @@ async function processWebhook(req, res, options = {}) {
       event = body.event;
       originalEvent = event;
       taskId = body.task_id;
+
+      previousTask = await loadPreviousTaskState(taskId);
 
       if (!event || !taskId) {
         logger.warn('Webhook missing event or task_id', {
@@ -298,7 +418,12 @@ async function processWebhook(req, res, options = {}) {
 
     // Route to specific handler
     try {
-      await routeToHandler(effectiveEvent, body, task);
+      await routeToHandler(effectiveEvent, body, task, {
+        previousTask,
+        originalEvent,
+        endpoint,
+        webhookId
+      });
     } catch (handlerError) {
       logger.error('Event handler failed', {
         event: effectiveEvent,
@@ -426,7 +551,7 @@ function refineDetectedEvent(event, context = {}) {
 /**
  * Route webhook to specific handler based on event type
  */
-async function routeToHandler(event, body, task) {
+async function routeToHandler(event, body, task, context = {}) {
   const historyItem = body.history_items?.[0];
 
   // Get user who made the change - try multiple sources
@@ -439,10 +564,17 @@ async function routeToHandler(event, body, task) {
     changedBy = body.payload.creator.username;
   }
 
+  const handlerContext = {
+    ...context,
+    historyItem,
+    changedBy,
+    body
+  };
+
   switch (event) {
     // ==================== TASK MANAGEMENT ====================
     case TRIGGER_TYPES.TASK_CREATED:
-      return await handleTaskCreated(task, body);
+      return await handleTaskCreated(task, body, handlerContext);
 
     case TRIGGER_TYPES.ASSIGNEE_ADDED:
       return await handleAssigneeAdded(task, historyItem, changedBy);
@@ -451,7 +583,7 @@ async function routeToHandler(event, body, task) {
       return await handleAssigneeRemoved(task, historyItem, changedBy);
 
     case TRIGGER_TYPES.STATUS_CHANGED:
-      return await handleStatusChanged(task, historyItem, changedBy);
+      return await handleStatusChanged(task, historyItem, changedBy, handlerContext);
 
     case TRIGGER_TYPES.PRIORITY_CHANGED:
       return await handlePriorityChanged(task, historyItem, changedBy);
@@ -522,7 +654,30 @@ async function routeToHandler(event, body, task) {
 /**
  * Handle task created
  */
-async function handleTaskCreated(task, body) {
+async function handleTaskCreated(task, body, context = {}) {
+  const statusName = task.status_name || body?.payload?.status?.status || '';
+  const statusType = task.status_type || body?.payload?.status?.type || '';
+
+  if (isNonOpenStatus(statusName, statusType) && !context.reroutedFromCreation) {
+    logger.warn('Task created event received for closed-state task - rerouting to status handler', {
+      taskId: task.id,
+      status: statusName,
+      endpoint: context.endpoint || 'universal'
+    });
+
+    await handleStatusChanged(
+      task,
+      context.historyItem || null,
+      context.changedBy || task.creator_username || 'Unknown',
+      {
+        ...context,
+        reroutedFromCreation: true
+      }
+    );
+
+    return;
+  }
+
   const assignees = getAssigneesWithInfo(task);
 
   // Emit event for notification service to handle
@@ -593,29 +748,63 @@ async function handleAssigneeRemoved(task, historyItem, changedBy) {
 /**
  * Handle status changed (including completion)
  */
-async function handleStatusChanged(task, historyItem, changedBy) {
-  // For automation webhooks, historyItem might be null
-  const beforeStatus = historyItem?.before?.status || 'unknown';
-  const afterStatus = task.status_name || historyItem?.after?.status || 'unknown';
-  const afterStatusType = task.status?.type || historyItem?.after?.status_type || historyItem?.after?.type || '';
+async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
+  const afterInfo = extractStatusInfo(
+    historyItem?.after,
+    historyItem?.after?.status,
+    historyItem?.value?.after,
+    historyItem?.value?.after?.status,
+    task.status_name ? { status: task.status_name, status_type: task.status_type } : null
+  ) || { name: task.status_name || 'غير معروف', type: task.status_type || null };
+
+  let beforeInfo = extractStatusInfo(
+    historyItem?.before,
+    historyItem?.before?.status,
+    historyItem?.value?.before,
+    historyItem?.before?.value
+  );
+
+  if ((!beforeInfo || !beforeInfo.name) && context.previousTask) {
+    beforeInfo = extractStatusInfo({
+      status: context.previousTask.status_name,
+      status_type: context.previousTask.status_type
+    });
+  }
+
+  if ((!beforeInfo || !beforeInfo.name) && task.id) {
+    const historicalInfo = await lookupPreviousStatusFromEvents(task.id);
+    if (historicalInfo?.name) {
+      beforeInfo = historicalInfo;
+    }
+  }
+
+  const beforeStatus = beforeInfo?.name && beforeInfo.name !== 'unknown'
+    ? beforeInfo.name.toString().trim()
+    : 'غير معروف';
+  const beforeStatusType = beforeInfo?.type || '';
+  const afterStatus = afterInfo?.name && afterInfo.name !== 'unknown'
+    ? afterInfo.name.toString().trim()
+    : 'غير معروف';
+  const afterStatusType = afterInfo?.type || '';
 
   logger.debug('Status change detected', {
     taskId: task.id,
     beforeStatus,
     afterStatus,
-    statusType: afterStatusType,
-    isAutomation: !historyItem
+    beforeStatusType,
+    afterStatusType,
+    isAutomation: !historyItem,
+    reroutedFromCreation: context.reroutedFromCreation || false
   });
 
   const isComplete = isNonOpenStatus(afterStatus, afterStatusType);
 
   if (isComplete) {
-    // Task completed - process gamification
     let userId = null;
     if (task.assignee_ids && task.assignee_ids.length > 0) {
-      userId = typeof task.assignee_ids === 'string' ?
-        JSON.parse(task.assignee_ids)[0] :
-        task.assignee_ids[0];
+      userId = typeof task.assignee_ids === 'string'
+        ? JSON.parse(task.assignee_ids)[0]
+        : task.assignee_ids[0];
     }
 
     let gamificationResult = null;
@@ -627,25 +816,29 @@ async function handleStatusChanged(task, historyItem, changedBy) {
       }
     }
 
-    // Emit event for notification service with gamification data
     eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
       task,
       userName: changedBy,
-      gamificationResult
+      gamificationResult,
+      beforeStatus,
+      afterStatus
     });
 
     logger.success('Task completed event emitted', {
       taskId: task.id,
+      from: beforeStatus,
+      to: afterStatus,
       aiWeight: task.ai_weight || 10,
       points: gamificationResult?.pointsEarned
     });
   } else {
-    // Just status changed
     eventBus.emitEvent(EVENTS.TASK_STATUS_CHANGED, {
       task,
       beforeStatus,
       afterStatus,
-      userName: changedBy
+      userName: changedBy,
+      beforeStatusType,
+      afterStatusType
     });
 
     logger.success('Task status changed event emitted', {

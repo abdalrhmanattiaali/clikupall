@@ -275,6 +275,17 @@ class EnhancedNotificationService {
   async handleTaskStatusChanged(data) {
     const { task, beforeStatus, afterStatus, userName } = data;
 
+    const normalizedBefore = (beforeStatus || '').toString().trim().toLowerCase();
+    const normalizedAfter = (afterStatus || '').toString().trim().toLowerCase();
+
+    if (normalizedBefore && normalizedAfter && normalizedBefore === normalizedAfter) {
+      logger.debug('Ignoring TASK_STATUS_CHANGED because status value did not change', {
+        taskId: task.id,
+        status: afterStatus
+      });
+      return;
+    }
+
     logger.info('🔄 Processing TASK_STATUS_CHANGED event', {
       taskId: task.id,
       taskName: task.name,
@@ -762,10 +773,13 @@ class EnhancedNotificationService {
       return aiMessage;
     }
 
+    const prettyBefore = this.formatStatusLabel(beforeStatus);
+    const prettyAfter = this.formatStatusLabel(afterStatus);
+
     let message = `🔄 *تغيير حالة المهمة*\n\n`;
     message += `*المهمة:* ${task.name}\n`;
-    message += `*من:* ${beforeStatus}\n`;
-    message += `*إلى:* ${afterStatus}\n`;
+    message += `*من:* ${prettyBefore}\n`;
+    message += `*إلى:* ${prettyAfter}\n`;
     message += `*بواسطة:* ${userName}\n`;
     message += `\n💡 ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
     message += `\n🔗 ${task.url}`;
@@ -936,6 +950,78 @@ class EnhancedNotificationService {
     return 'ابدأ بخطوة صغيرة تقود لنتيجة ملموسة اليوم وشارك تقدمك مع الفريق.';
   }
 
+  formatStatusLabel(status) {
+    if (!status) {
+      return 'غير معروف';
+    }
+
+    const raw = status.toString().trim();
+    if (!raw) {
+      return 'غير معروف';
+    }
+
+    const key = raw.toLowerCase();
+
+    const dictionary = {
+      'to do': 'بانتظار البدء',
+      'todo': 'بانتظار البدء',
+      'to-do': 'بانتظار البدء',
+      'planning': 'قيد التخطيط',
+      'in progress': 'قيد التنفيذ',
+      'update required': 'بحاجة إلى تحديث',
+      'on hold': 'قيد التعليق',
+      'complete & not invoiced': 'مكتمل (بانتظار الفوترة)',
+      'complete and not invoiced': 'مكتمل (بانتظار الفوترة)',
+      'filling done': 'تمت التعبئة',
+      'complete': 'مكتمل',
+      'completed': 'مكتمل',
+      'cancelled': 'ملغاة',
+      'canceled': 'ملغاة'
+    };
+
+    if (dictionary[key]) {
+      return dictionary[key];
+    }
+
+    if (key.includes('complete') && key.includes('invoice')) {
+      return 'مكتمل (بانتظار الفوترة)';
+    }
+
+    if (key.includes('complete') || key.includes('done')) {
+      return 'مكتمل';
+    }
+
+    if (key.includes('progress')) {
+      return 'قيد التنفيذ';
+    }
+
+    if (key.includes('plan')) {
+      return 'قيد التخطيط';
+    }
+
+    if (key.includes('hold')) {
+      return 'قيد التعليق';
+    }
+
+    if (key.includes('update')) {
+      return 'بحاجة إلى تحديث';
+    }
+
+    if (key.includes('review')) {
+      return 'بانتظار المراجعة';
+    }
+
+    if (key.includes('fill')) {
+      return 'تمت التعبئة';
+    }
+
+    if (key.includes('cancel')) {
+      return 'ملغاة';
+    }
+
+    return raw;
+  }
+
   buildStatusChangeInsight(task, beforeStatus, afterStatus, userName) {
     const normalizedAfter = (afterStatus || '').toLowerCase();
     const dueInDays = this.calculateDueInDays(task);
@@ -949,6 +1035,26 @@ class EnhancedNotificationService {
         return `المهمة الآن قيد التنفيذ، تبقى ${dueInDays <= 0 ? 'ساعات قليلة' : `${dueInDays} يوم`}؛ شارك تحديثاً سريعاً حول ما تم.`;
       }
       return 'انطلق في التنفيذ وحدد أول نتيجة ملموسة لمشاركتها مع الفريق خلال اليوم.';
+    }
+
+    if (normalizedAfter.includes('update required')) {
+      return 'المهمة بحاجة إلى تحديث؛ راجع آخر التغييرات وسجل ما ينقص فوراً.';
+    }
+
+    if (normalizedAfter.includes('hold') || normalizedAfter.includes('تعليق')) {
+      return 'المهمة معلقة؛ وثّق سبب الإيقاف وحدد موعداً لمراجعة القرار.';
+    }
+
+    if (normalizedAfter.includes('plan') || normalizedAfter.includes('تخط')) {
+      return 'وقت التخطيط؛ ضع قائمة بالخطوات القادمة وحدد أصحاب المسؤوليات قبل البدء.';
+    }
+
+    if (normalizedAfter.includes('fill') || normalizedAfter.includes('تعب')) {
+      return 'تم إنهاء مرحلة التعبئة؛ تحقق من اكتمال النماذج وشارك أي بيانات ناقصة مع الفريق المالي.';
+    }
+
+    if (normalizedAfter.includes('cancel')) {
+      return 'المهمة ألغيت؛ وثّق السبب وشارك أي التزامات أو متابعات لازمة مع أصحاب المصلحة.';
     }
 
     if (normalizedAfter.includes('blocked') || normalizedAfter.includes('موقوف')) {

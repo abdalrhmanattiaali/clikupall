@@ -17,6 +17,7 @@ router.post('/clickup/task-created/:webhookId?', enhancedWebhookController.handl
 router.post('/clickup/task-assigned/:webhookId?', enhancedWebhookController.handleTaskAssignedWebhook);
 router.post('/clickup/status-changed/:webhookId?', enhancedWebhookController.handleStatusChangedWebhook);
 router.post('/clickup/task-completed/:webhookId?', enhancedWebhookController.handleTaskCompletedWebhook);
+router.post('/clickup/task-comment/:webhookId?', enhancedWebhookController.handleTaskCommentWebhook);
 
 /**
  * POST /webhooks/clickup/:webhookId?

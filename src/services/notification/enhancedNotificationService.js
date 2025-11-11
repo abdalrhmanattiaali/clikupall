@@ -619,21 +619,58 @@ class EnhancedNotificationService {
    * Handle comment posted
    */
   async handleCommentPosted(data) {
-    const { task, commentText, userName } = data;
+    const {
+      task,
+      commentText = '',
+      userName = 'غير معروف',
+      attachments = [],
+      participants = [],
+      actor = null
+    } = data;
 
-    const preview = commentText.length > 100 ? commentText.substring(0, 100) + '...' : commentText;
+    logger.info('💬 Processing TASK_COMMENT_POSTED event', {
+      taskId: task.id,
+      taskName: task.name,
+      actor: userName,
+      participantCount: Array.isArray(participants) ? participants.length : 0,
+      attachmentCount: Array.isArray(attachments) ? attachments.length : 0
+    });
 
-    const message = `💬 *تعليق جديد*\n\n` +
-      `*المهمة:* ${task.name}\n` +
-      `*من:* ${userName}\n` +
-      `*التعليق:* ${preview}`;
+    const preparedAttachments = await this.prepareAttachmentPreviews(attachments);
+    const groupMessage = await this.buildCommentGroupMessage(task, userName, commentText, preparedAttachments, participants);
 
     this.addToQueue({
       type: 'comment_posted',
       task,
-      message,
-      userName
+      message: groupMessage,
+      data: {
+        userName,
+        commentText,
+        attachments: preparedAttachments,
+        participants
+      }
     });
+
+    const directRecipients = Array.isArray(participants) ? participants.filter(member => member.phone) : [];
+    const notifiedPhones = new Set();
+
+    for (const recipient of directRecipients) {
+      if (!recipient.phone || notifiedPhones.has(recipient.phone)) {
+        continue;
+      }
+
+      const dmMessage = await this.buildCommentDirectMessage(
+        task,
+        recipient,
+        userName,
+        commentText,
+        preparedAttachments,
+        actor
+      );
+
+      await this.sendImmediateNotification(dmMessage, 'user', recipient.phone);
+      notifiedPhones.add(recipient.phone);
+    }
   }
 
   /**
@@ -814,6 +851,83 @@ class EnhancedNotificationService {
     }
 
     message += `\n💡 ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
+    message += `\n🔗 ${task.url}`;
+
+    return message;
+  }
+
+  async buildCommentGroupMessage(task, userName, commentText, attachments, participants = []) {
+    const aiMessage = await this.generateNotificationWithTemplate('comment_group', {
+      task,
+      userName,
+      commentText,
+      attachments,
+      participants
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    const participantNames = Array.isArray(participants) && participants.length > 0
+      ? participants.map(p => p.name).join('، ')
+      : 'غير محدد';
+
+    let message = `💬 *تعليق جديد على مهمة*\n\n`;
+    message += `*المهمة:* ${task.name}\n`;
+    message += `*بواسطة:* ${userName}\n`;
+    message += `*المعنيون:* ${participantNames}\n`;
+
+    if (commentText) {
+      message += `\n"${this.truncateText(commentText, 220)}"\n`;
+    }
+
+    if (attachments && attachments.length > 0) {
+      message += `\n📎 مرفقات (${attachments.length}):\n`;
+      message += `${this.formatAttachmentLines(attachments)}\n`;
+    }
+
+    message += `\n🔗 ${task.url}`;
+
+    return message;
+  }
+
+  async buildCommentDirectMessage(task, recipient, userName, commentText, attachments, actor = null) {
+    const aiMessage = await this.generateNotificationWithTemplate('comment_dm', {
+      task,
+      recipient,
+      userName,
+      commentText,
+      attachments,
+      actor
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    const recipientKey = this.buildParticipantKey(recipient);
+    const actorKey = this.buildParticipantKey(actor);
+    const isActor = recipientKey && actorKey && recipientKey === actorKey;
+
+    let message = isActor
+      ? `📝 *تم تسجيل تعليقك على المهمة*\n\n`
+      : `💬 *أضيف تعليق جديد لك*\n\n`;
+
+    message += `*المهمة:* ${task.name}\n`;
+    message += `*من:* ${isActor ? 'أنت' : userName}\n`;
+    message += `*إلى:* ${recipient.name}\n`;
+
+    if (commentText) {
+      message += `\n${this.truncateText(commentText, 220)}\n`;
+    }
+
+    if (attachments && attachments.length > 0) {
+      message += `\n📎 مرفقات (${attachments.length}):\n`;
+      message += `${this.formatAttachmentLines(attachments)}\n`;
+    }
+
+    message += `\n📣 تم إشعارك لأنك مرتبط بهذه المهمة كمكلف أو منشئ.`;
     message += `\n🔗 ${task.url}`;
 
     return message;
@@ -1123,6 +1237,87 @@ class EnhancedNotificationService {
     }
 
     return 'إغلاق مميز؛ حدّد الخطوة التالية أو أي متابعة مطلوبة للحفاظ على الزخم.';
+  }
+
+  async prepareAttachmentPreviews(attachments = []) {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      return [];
+    }
+
+    const prepared = [];
+
+    for (const attachment of attachments) {
+      if (!attachment || !attachment.url) {
+        continue;
+      }
+
+      const displayName = attachment.name || `ملف ${prepared.length + 1}`;
+      const shortUrl = await shortenUrl(attachment.url);
+
+      prepared.push({
+        ...attachment,
+        name: displayName,
+        shortUrl: shortUrl || attachment.url
+      });
+    }
+
+    return prepared;
+  }
+
+  formatAttachmentLines(attachments = []) {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      return '';
+    }
+
+    const lines = [];
+
+    attachments.forEach((attachment, index) => {
+      if (!attachment || !attachment.url) {
+        return;
+      }
+
+      const link = attachment.shortUrl || attachment.url;
+      const label = attachment.name || `ملف ${index + 1}`;
+      lines.push(`• ${label}: ${link}`);
+    });
+
+    return lines.join('\n');
+  }
+
+  truncateText(text, limit = 200) {
+    if (!text || typeof text !== 'string') {
+      return '';
+    }
+
+    if (text.length <= limit) {
+      return text;
+    }
+
+    return `${text.substring(0, limit - 3)}...`;
+  }
+
+  buildParticipantKey(participant) {
+    if (!participant || typeof participant !== 'object') {
+      return null;
+    }
+
+    if (participant.id) {
+      return `id:${participant.id}`;
+    }
+
+    if (participant.email) {
+      return `email:${participant.email.toLowerCase()}`;
+    }
+
+    if (participant.phone) {
+      return `phone:${participant.phone}`;
+    }
+
+    if (participant.name) {
+      return `name:${participant.name.toLowerCase()}`;
+    }
+
+    return null;
   }
 
   /**

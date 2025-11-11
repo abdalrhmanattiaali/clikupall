@@ -12,6 +12,7 @@
 | إضافة مسؤول | `POST /webhooks/clickup/task-assigned` | يرسل رسالة ترحيب فورية للمسؤول الجديد ويحدث لوحة الفريق |
 | تغيير الحالة | `POST /webhooks/clickup/status-changed` | يبث رسالة حالة في القروب ويولّد نصيحة AI حسب الحالة |
 | إكمال المهمة | `POST /webhooks/clickup/task-completed` | يحسب نقاط التحفيز، يرسل رسالة إنجاز شخصية، ويحدّث لوحة الشرف |
+| تعليق على مهمة | `POST /webhooks/clickup/task-comment` | يرسل إشعاراً عاماً وخاصاً لكل المكلفين والمنشئ مع المرفقات |
 
 > استخدم نفس الـ URL مع إضافة معرّف الـ webhook في النهاية إذا احتجت تتبعاً مخصصاً، مثل: `/webhooks/clickup/status-changed/my-team-bot`.
 
@@ -93,6 +94,36 @@ curl -X POST http://localhost:5014/webhooks/clickup/task-completed/demo \
   }'
 ```
 
+#### 💬 تعليق بمرفقات (ينبّه الفريق والمكلفين)
+```bash
+curl -X POST http://localhost:5014/webhooks/clickup/task-comment/demo \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event": "taskCommentPosted",
+    "task_id": "TASK_ID_HERE",
+    "comment": {
+      "text": "تم رفع تقرير الفحص – برجاء المراجعة.",
+      "attachments": [
+        {"id": "file-1", "name": "QA-report.pdf", "url": "https://files.example.com/qa-report.pdf"}
+      ]
+    },
+    "history_items": [{
+      "comment": {"text": "تم رفع تقرير الفحص – برجاء المراجعة."},
+      "user": {"username": "Quality Bot", "email": "qa@example.com"}
+    }],
+    "payload": {
+      "id": "TASK_ID_HERE",
+      "name": "متابعة أوردرات العملاء",
+      "status": {"status": "IN PROGRESS", "type": "in progress"},
+      "assignees": [
+        {"id": "123", "username": "Abd Al Rahman", "email": "abd@example.com"},
+        {"id": "456", "username": "Sara", "email": "sara@example.com"}
+      ],
+      "creator": {"id": "789", "username": "Team Lead", "email": "lead@example.com"}
+    }
+  }'
+```
+
 #### 🚫 إلغاء المهمة (يجب أن يُعامل كتغيير حالة فقط)
 ```bash
 curl -X POST http://localhost:5014/webhooks/clickup/status-changed/demo \
@@ -156,7 +187,7 @@ curl -X POST http://localhost:5014/webhooks/clickup/status-changed/demo \
 - [ ] رسالة تغيير الحالة تصل للقروب باللغة الصحيحة وتتضمن الحالة السابقة والجديدة.
 - [ ] رسالة الإكمال تحتوي نقاط التحفيز والأوسمة الجديدة (إن وُجدت).
 - [ ] لا تصل رسالة تكليف عند مجرد تغيير الحالة إلى «مكتمل».
-- [ ] رسائل (إنشاء/تعيين/تعليق/تعليق) توضّح دائماً من نفّذ الحدث ومن هو المسؤول عن المهمة.
+- [ ] رسائل (إنشاء/تعيين/تعليق/تعليق) توضّح دائماً من نفّذ الحدث ومن هو المسؤول عن المهمة، مع إرسال نسخة خاصة لكل مكلف ومنشئ.
 - [ ] تغيير الحالة إلى «cancelled» لا يمنح نقاطاً ويظهر في القروب كإلغاء فقط مع حفظ الحالة السابقة.
 - [ ] لوحة التحفيز (النقاط/الأوسمة) تتحدّث بعد الإكمال.
 - [ ] تقارير الفريق يمكن استعراضها بدون أخطاء (`GET /test/scheduler-jobs`).

@@ -490,6 +490,14 @@ export async function handleTaskCompletedWebhook(req, res) {
   });
 }
 
+export async function handleTaskCommentWebhook(req, res) {
+  return processWebhook(req, res, {
+    endpoint: 'task_comment',
+    forcedTrigger: TRIGGER_TYPES.COMMENT_POSTED,
+    expectedTriggers: [TRIGGER_TYPES.COMMENT_POSTED]
+  });
+}
+
 /**
  * Categorize trigger type
  */
@@ -1209,18 +1217,337 @@ async function handleAllSubtasksResolved(task, changedBy) {
  * Handle comment posted
  */
 async function handleCommentPosted(task, body, changedBy) {
-  const commentText = body.comment?.text || body.history_items?.[0]?.comment?.text || '';
+  const commentText = extractCommentText(body);
+  const attachments = gatherCommentAttachments(
+    body.comment,
+    body.payload?.comment,
+    body.history_items?.[0]?.comment,
+    body.history_items?.[0]?.attachments,
+    body.history_items?.[0]?.value,
+    body.attachments
+  );
+
+  const assignees = getAssigneesWithInfo(task);
+  const creator = getTaskCreatorInfo(task);
+  const participants = getTaskParticipants(task, assignees, creator);
+  const actor = resolveActorInfo(body, changedBy);
 
   eventBus.emitEvent(EVENTS.TASK_COMMENT_POSTED, {
     task,
     commentText,
-    userName: changedBy
+    attachments,
+    userName: changedBy,
+    assignees,
+    creator,
+    participants,
+    actor
   });
 
-  logger.success('Comment posted event emitted', { taskId: task.id });
+  logger.success('Comment posted event emitted', {
+    taskId: task.id,
+    textLength: commentText.length,
+    attachmentCount: attachments.length
+  });
 }
 
 // ==================== UTILITY FUNCTIONS ====================
+
+function extractCommentText(body = {}) {
+  const candidates = [
+    body.comment,
+    body.comment?.text,
+    body.comment?.comment_text,
+    body.comment?.body,
+    body.payload?.comment,
+    body.payload?.comment?.text,
+    body.payload?.comment?.comment_text,
+    body.payload?.comment?.body,
+    body.history_items?.[0]?.comment,
+    body.history_items?.[0]?.comment?.text,
+    body.history_items?.[0]?.comment?.comment_text,
+    body.history_items?.[0]?.comment?.body,
+    body.history_items?.[0]?.value,
+    body.history_items?.[0]?.value?.after,
+    body.history_items?.[0]?.value?.after?.comment,
+    body.history_items?.[0]?.value?.after?.comment?.text,
+    body.history_items?.[0]?.value?.after?.comment?.comment_text,
+    body.history_items?.[0]?.value?.comment,
+    body.history_items?.[0]?.value?.comment_text,
+    body.history_items?.[0]?.value?.text
+  ];
+
+  for (const candidate of candidates) {
+    const raw = extractTextCandidate(candidate);
+    if (raw) {
+      const sanitized = sanitizeCommentText(raw);
+      if (sanitized) {
+        return sanitized;
+      }
+    }
+  }
+
+  return '';
+}
+
+function extractTextCandidate(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  if (typeof candidate === 'string') {
+    return candidate;
+  }
+
+  if (typeof candidate !== 'object') {
+    return null;
+  }
+
+  const keys = ['text', 'comment_text', 'body', 'content', 'description', 'plain_text', 'value'];
+  for (const key of keys) {
+    if (typeof candidate[key] === 'string' && candidate[key].trim()) {
+      return candidate[key];
+    }
+  }
+
+  return null;
+}
+
+function sanitizeCommentText(text) {
+  if (!text || typeof text !== 'string') {
+    return '';
+  }
+
+  let normalized = text;
+  normalized = normalized.replace(/\r/g, '');
+  normalized = normalized.replace(/<br\s*\/?\s*>/gi, '\n');
+  normalized = normalized.replace(/<div>/gi, '\n');
+  normalized = normalized.replace(/<\/(div|p)>/gi, '\n');
+  normalized = normalized.replace(/<li>/gi, '\n• ');
+  normalized = normalized.replace(/<\/(ul|ol|li)>/gi, '\n');
+  normalized = normalized.replace(/<[^>]+>/g, '');
+  normalized = decodeHtmlEntities(normalized);
+  normalized = normalized.replace(/\n{3,}/g, '\n\n');
+
+  return normalized.trim();
+}
+
+function decodeHtmlEntities(text) {
+  if (!text) {
+    return '';
+  }
+
+  const replacements = {
+    '&nbsp;': ' ',
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#34;': '"',
+    '&#39;': "'",
+    '&#x27;': "'",
+    '&apos;': "'",
+    '&bull;': '•'
+  };
+
+  return text.replace(/(&nbsp;|&amp;|&lt;|&gt;|&quot;|&#34;|&#39;|&#x27;|&apos;|&bull;)/g, (match) => replacements[match] || match);
+}
+
+function gatherCommentAttachments(...sources) {
+  const results = [];
+  const seen = new Set();
+  const seenObjects = new Set();
+
+  const pushAttachment = (candidate) => {
+    if (!candidate) {
+      return;
+    }
+
+    const url = candidate.url
+      || candidate.link
+      || candidate.download_url
+      || candidate.preview_url
+      || candidate.thumb_url
+      || candidate.thumbnail
+      || candidate.view_url;
+
+    if (!url) {
+      return;
+    }
+
+    const id = candidate.id || candidate.uuid || candidate.file_id || url;
+    const key = `${id}::${url}`;
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+
+    const rawName = candidate.name
+      || candidate.title
+      || candidate.filename
+      || candidate.file_name
+      || candidate.display_name
+      || candidate.id;
+
+    results.push({
+      id,
+      name: (rawName && rawName.toString().trim()) ? rawName.toString().trim() : 'ملف مرفق',
+      url,
+      type: candidate.type || candidate.content_type || candidate.mime_type || candidate.mime || candidate.mimetype || null
+    });
+  };
+
+  const inspect = (value) => {
+    if (!value) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      value.forEach(item => inspect(item));
+      return;
+    }
+
+    if (typeof value !== 'object') {
+      return;
+    }
+
+    if (seenObjects.has(value)) {
+      return;
+    }
+    seenObjects.add(value);
+
+    pushAttachment(value);
+
+    const nestedKeys = ['attachments', 'attachment', 'files', 'file', 'value', 'after', 'before', 'new', 'old', 'children', 'items', 'data'];
+    nestedKeys.forEach((key) => {
+      if (value[key]) {
+        inspect(value[key]);
+      }
+    });
+  };
+
+  sources.forEach(source => inspect(source));
+
+  return results;
+}
+
+function resolveActorInfo(body = {}, fallbackName = null) {
+  const candidates = [];
+  const historyUser = body.history_items?.[0]?.user;
+  const commentUser = body.comment?.user || body.payload?.comment?.user;
+  const payloadUser = body.payload?.user;
+
+  [historyUser, commentUser, payloadUser].forEach((user) => {
+    if (!user) {
+      return;
+    }
+
+    candidates.push({
+      id: user.id || user.user_id || user.userid || null,
+      email: user.email || user.user_email || null,
+      name: user.username || user.name || user.full_name || null,
+      phone: user.phone || user.mobile || null
+    });
+  });
+
+  if (fallbackName) {
+    candidates.push({ name: fallbackName });
+  }
+
+  for (const candidate of candidates) {
+    const resolved = resolveAssigneeInfo(candidate);
+    if (resolved) {
+      if (!resolved.name && fallbackName) {
+        resolved.name = fallbackName;
+      }
+      return resolved;
+    }
+  }
+
+  return fallbackName ? { id: null, name: fallbackName } : null;
+}
+
+function getTaskCreatorInfo(task) {
+  if (!task) {
+    return null;
+  }
+
+  const candidates = [];
+
+  if (task.creator) {
+    candidates.push({
+      id: task.creator.id || task.creator.user_id || null,
+      email: task.creator.email || task.creator.user_email || null,
+      name: task.creator.username || task.creator.name || null,
+      phone: task.creator.phone || null
+    });
+  }
+
+  candidates.push({
+    id: task.creator_id || task.created_by || null,
+    email: task.creator_email || null,
+    name: task.creator_username || task.creator_name || null
+  });
+
+  candidates.push({
+    id: task.creator_user_id || null,
+    email: task.creator_user_email || null,
+    name: task.creator_user_name || null
+  });
+
+  for (const candidate of candidates) {
+    const resolved = resolveAssigneeInfo(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  return null;
+}
+
+function getTaskParticipants(task, assignees = null, creator = null) {
+  const participants = new Map();
+
+  const addParticipant = (member) => {
+    if (!member) {
+      return;
+    }
+
+    const key = buildAssigneeKey(member)
+      || (member.phone ? `phone:${member.phone}` : null)
+      || (member.name ? `name:${member.name.toLowerCase()}` : null)
+      || `member_${participants.size}`;
+
+    if (participants.has(key)) {
+      return;
+    }
+
+    participants.set(key, member);
+  };
+
+  const resolvedAssignees = Array.isArray(assignees) ? assignees : getAssigneesWithInfo(task);
+  resolvedAssignees.forEach(addParticipant);
+
+  if (creator) {
+    addParticipant(creator);
+  }
+
+  const followerCandidates = gatherAssigneeCandidates(
+    task.watchers,
+    task.watchers?.members,
+    task.followers,
+    task.members,
+    task.subscribers,
+    task.assignees
+  );
+
+  followerCandidates
+    .map(candidate => resolveAssigneeInfo(candidate))
+    .filter(Boolean)
+    .forEach(addParticipant);
+
+  return Array.from(participants.values());
+}
 
 /**
  * Get assignees with full team member info
@@ -1544,6 +1871,7 @@ export default {
   handleTaskAssignedWebhook,
   handleStatusChangedWebhook,
   handleTaskCompletedWebhook,
+  handleTaskCommentWebhook,
   TRIGGER_TYPES,
   TRIGGER_CATEGORIES
 };

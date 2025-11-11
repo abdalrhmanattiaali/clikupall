@@ -8,7 +8,7 @@ import logger from '../core/logger.js';
 import aiService from '../services/ai/index.js';
 import clickupService from '../services/clickup/clickupService.js';
 import whatsappService from '../services/whatsapp/whatsappService.js';
-import notificationService from '../services/notification/notificationService.js';
+import notificationService from '../services/notification/enhancedNotificationService.js';
 import schedulerService from '../services/scheduler/schedulerService.js';
 import motivationService from '../services/motivation/motivationService.js';
 import gamificationService from '../services/gamification/gamificationService.js';

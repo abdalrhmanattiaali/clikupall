@@ -21,6 +21,10 @@ class EnhancedNotificationService {
     this.sentDirectNotifications = new Set();
     this.whatsappReady = false;
 
+    // Deduplication: track recent notifications to prevent duplicates
+    this.recentNotifications = new Map(); // key: taskId-eventType, value: timestamp
+    this.deduplicationWindow = 10000; // 10 seconds
+
     this.setupEventListeners();
   }
 
@@ -116,6 +120,11 @@ class EnhancedNotificationService {
   async handleTaskCreated(data) {
     const { task, assignees } = data;
 
+    // Check for duplicate
+    if (this.isDuplicateNotification(task.id, 'created')) {
+      return; // Skip duplicate
+    }
+
     logger.info('📝 Processing TASK_CREATED event', {
       taskId: task.id,
       taskName: task.name,
@@ -154,6 +163,11 @@ class EnhancedNotificationService {
    */
   async handleTaskCompleted(data) {
     const { task, userName, gamificationResult } = data;
+
+    // Check for duplicate
+    if (this.isDuplicateNotification(task.id, 'completed')) {
+      return; // Skip duplicate
+    }
 
     logger.info('✅ Processing TASK_COMPLETED event', {
       taskId: task.id,
@@ -200,6 +214,11 @@ class EnhancedNotificationService {
     if (!assignees || assignees.length === 0) {
       logger.debug('TASK_ASSIGNED event received but no assignees found');
       return;
+    }
+
+    // Check for duplicate
+    if (this.isDuplicateNotification(task.id, 'assigned')) {
+      return; // Skip duplicate
     }
 
     logger.info('👤 Processing TASK_ASSIGNED event', {
@@ -1248,6 +1267,59 @@ class EnhancedNotificationService {
       isPaused: this.isPaused,
       hasBatchTimer: !!this.batchTimeout
     };
+  }
+
+  // ==================== DEDUPLICATION ====================
+
+  /**
+   * Check if notification is duplicate (sent recently)
+   * Prevents both same-event duplicates AND cross-event duplicates for completed tasks
+   * @param {string} taskId - Task ID
+   * @param {string} eventType - Event type (e.g., 'completed', 'assigned', 'created')
+   * @returns {boolean} - True if duplicate, false if should send
+   */
+  isDuplicateNotification(taskId, eventType) {
+    const now = Date.now();
+
+    // Check 1: Same event type duplicate (10 seconds window)
+    const eventKey = `${taskId}-${eventType}`;
+    const lastSent = this.recentNotifications.get(eventKey);
+
+    if (lastSent && (now - lastSent) < this.deduplicationWindow) {
+      logger.warn('Duplicate notification blocked (same event)', {
+        taskId,
+        eventType,
+        timeSinceLastSent: `${Math.round((now - lastSent) / 1000)}s`
+      });
+      return true; // Duplicate - don't send
+    }
+
+    // Check 2: Cross-event duplicate prevention (completed tasks)
+    // If task was recently completed, block any other events for 5 seconds
+    const completedKey = `${taskId}-completed`;
+    const lastCompleted = this.recentNotifications.get(completedKey);
+
+    if (eventType !== 'completed' && lastCompleted && (now - lastCompleted) < 5000) {
+      logger.warn('Notification blocked (task recently completed)', {
+        taskId,
+        eventType,
+        timeSinceCompleted: `${Math.round((now - lastCompleted) / 1000)}s`
+      });
+      return true; // Block - task was just completed
+    }
+
+    // Not duplicate - mark as sent and allow
+    this.recentNotifications.set(eventKey, now);
+
+    // Clean up old entries (older than 2x deduplication window)
+    const cleanupThreshold = now - (this.deduplicationWindow * 2);
+    for (const [k, timestamp] of this.recentNotifications.entries()) {
+      if (timestamp < cleanupThreshold) {
+        this.recentNotifications.delete(k);
+      }
+    }
+
+    return false; // Not duplicate - send
   }
 
   // ==================== AI ENHANCEMENT ====================

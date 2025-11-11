@@ -759,9 +759,20 @@ class EnhancedNotificationService {
   }
 
   /**
-   * Build DM for task assignment (more personal + optional AI tip)
+   * Build DM for task assignment (AI-powered with strict template)
    */
   async buildTaskAssignedDM(task, assignee) {
+    // Try AI template-based generation first
+    const aiMessage = await this.generateNotificationWithTemplate('assignment_dm', {
+      task,
+      assignee
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    // Fallback: default message
     const aiWeight = task.ai_weight || 10;
     const complexity = task.ai_complexity || 'medium';
 
@@ -787,24 +798,28 @@ class EnhancedNotificationService {
       }
     }
 
-    message += `\n🔗 ${task.url}`;
-
-    // Try to get AI-generated contextual tip
-    const aiTip = await this.enhanceAssignmentMessage(task, assignee);
-
-    if (aiTip) {
-      message += `\n\n💡 *نصيحة AI:*\n${aiTip}`;
-    }
-
-    message += `\n\n💪 *بالتوفيق!*`;
+    message += `\n🔗 ${task.url}\n\n`;
+    message += `💪 *بالتوفيق!*`;
 
     return message;
   }
 
   /**
-   * Build DM for task completion (with achievements + optional AI enhancement)
+   * Build DM for task completion (AI-powered with strict template)
    */
   async buildCompletionDM(task, assignee, gamificationResult) {
+    // Try AI template-based generation first
+    const aiMessage = await this.generateNotificationWithTemplate('completion_dm', {
+      task,
+      assignee,
+      gamificationResult
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    // Fallback: default message
     let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
     message += `✅ لقد أكملت: *${task.name}*\n\n`;
 
@@ -822,28 +837,16 @@ class EnhancedNotificationService {
       message += `• ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
     }
 
-    // Try to get AI-enhanced personalized message
-    const aiMessage = await this.enhanceCompletionMessage(task, assignee, gamificationResult);
+    // Fallback random tip
+    const tips = [
+      '💡 *نصيحة:* حاول إكمال المهام الأصعب في بداية اليوم عندما يكون تركيزك أعلى!',
+      '💡 *نصيحة:* قسّم المهام الكبيرة إلى مهام فرعية أصغر لتحقيق تقدم مستمر!',
+      '💡 *نصيحة:* خصص 25 دقيقة من التركيز الكامل (Pomodoro) ثم استرح 5 دقائق!'
+    ];
+    const randomTip = tips[Math.floor(Math.random() * tips.length)];
 
-    if (aiMessage) {
-      // Use AI-generated personalized message
-      message += `\n\n✨ *رسالة شخصية:*\n${aiMessage}\n\n`;
-      message += `🔥 استمر في الإنجاز!`;
-    } else {
-      // Fallback to random tip
-      const tips = [
-        '💡 *نصيحة:* حاول إكمال المهام الأصعب في بداية اليوم عندما يكون تركيزك أعلى!',
-        '💡 *نصيحة:* قسّم المهام الكبيرة إلى مهام فرعية أصغر لتحقيق تقدم مستمر!',
-        '💡 *نصيحة:* خصص 25 دقيقة من التركيز الكامل (Pomodoro) ثم استرح 5 دقائق!',
-        '💡 *نصيحة:* راجع مهامك المكتملة أسبوعياً لتقييم تقدمك!',
-        '💡 *نصيحة:* تواصل مع الفريق عند مواجهة عقبات - التعاون يسرّع الإنجاز!',
-        '💡 *نصيحة:* ضع أهدافاً يومية صغيرة وقابلة للتحقيق!'
-      ];
-      const randomTip = tips[Math.floor(Math.random() * tips.length)];
-
-      message += `\n${randomTip}\n\n`;
-      message += `🔥 استمر في الإنجاز!`;
-    }
+    message += `\n${randomTip}\n\n`;
+    message += `🔥 استمر في الإنجاز!`;
 
     return message;
   }
@@ -1322,88 +1325,154 @@ class EnhancedNotificationService {
     return false; // Not duplicate - send
   }
 
-  // ==================== AI ENHANCEMENT ====================
+  // ==================== AI TEMPLATE-BASED GENERATION ====================
 
   /**
-   * Enhance completion message with AI-generated personalized congratulations
-   * Only if env.features.aiNotifications is enabled
+   * Generate notification using AI with strict template
+   * AI fills the template with smart content while maintaining consistent structure
    */
-  async enhanceCompletionMessage(task, assignee, gamificationResult) {
+  async generateNotificationWithTemplate(templateType, data) {
     if (!env.features.aiNotifications) {
-      return null; // Skip AI, use default message
+      return null; // Skip AI, use default
     }
 
     try {
-      const systemPrompt = `أنت مساعد تحفيزي. اكتب رسالة تهنئة شخصية قصيرة (2-3 جمل) بالعربية لشخص أكمل مهمة.`;
+      // Build system prompt with strict template instructions
+      const systemPrompt = this.buildTemplateSystemPrompt(templateType);
 
-      const userMessage = `المستخدم: ${assignee.name}
-المهمة المكتملة: ${task.name}
-النقاط المكتسبة: ${gamificationResult.pointsEarned}
-الأوسمة الجديدة: ${gamificationResult.newBadges?.length || 0}
-الوزن: ${task.ai_weight || 10} نقطة
-التعقيد: ${task.ai_complexity || 'medium'}
+      // Build user message with all data
+      const userMessage = this.buildTemplateDataMessage(templateType, data);
 
-اكتب رسالة تهنئة شخصية قصيرة ومحفزة.`;
-
-      const aiMessage = await aiService.generateCompletion(
+      const aiResponse = await aiService.generateCompletion(
         systemPrompt,
         userMessage,
-        { temperature: 0.8, max_tokens: 150 }
+        { temperature: 0.7, max_tokens: 500 }
       );
 
-      logger.debug('AI completion message generated', {
-        taskId: task.id,
-        assignee: assignee.name
+      logger.debug('AI template notification generated', {
+        templateType,
+        taskId: data.task?.id
       });
 
-      return aiMessage;
+      return aiResponse;
     } catch (error) {
-      logger.error('AI message generation failed, using default', {
-        error: error.message
+      logger.error('AI template generation failed', {
+        error: error.message,
+        templateType
       });
-      return null; // Fallback to default message
+      return null; // Fallback to default
     }
   }
 
   /**
-   * Enhance task assignment message with AI-generated contextual tip
-   * Only if env.features.aiNotifications is enabled
+   * Build system prompt for AI with strict template
    */
-  async enhanceAssignmentMessage(task, assignee) {
-    if (!env.features.aiNotifications) {
-      return null; // Skip AI, use default message
+  buildTemplateSystemPrompt(templateType) {
+    const templates = {
+      assignment_dm: `أنت مساعد إشعارات. املأ القالب التالي بالعربية بدقة.
+
+**القالب (التزم به تماماً):**
+👋 مرحباً {name}!
+
+🎯 تم إسناد مهمة جديدة لك:
+📝 {task_name}
+
+التفاصيل:
+• الأولوية: {priority}
+• الوزن: {weight} نقطة 💎
+• التعقيد: {complexity}
+{estimated_time}
+{due_date}
+
+🔗 {url}
+
+💡 نصيحة AI:
+{tip}
+
+💪 بالتوفيق!
+
+**التعليمات:**
+- احتفظ بكل emoji والهيكل
+- املأ {placeholders} بالبيانات المعطاة
+- النصيحة: جملة عملية واحدة خاصة بهذه المهمة`,
+
+      completion_dm: `أنت مساعد إشعارات. املأ القالب التالي بالعربية بدقة.
+
+**القالب (التزم به تماماً):**
+🎉 أحسنت {name}!
+
+✅ لقد أكملت: {task_name}
+
+المكافآت:
+• {points} نقطة 🎯
+{badges}
+{shield}
+
+✨ رسالة شخصية:
+{message}
+
+🔥 استمر في الإنجاز!
+
+**التعليمات:**
+- احتفظ بكل emoji والهيكل
+- املأ {placeholders} بالبيانات
+- الرسالة: 2-3 جمل تحفيزية شخصية`
+    };
+
+    return templates[templateType] || templates.assignment_dm;
+  }
+
+  /**
+   * Build data message for AI
+   */
+  buildTemplateDataMessage(templateType, data) {
+    const { task, assignee, userName, gamificationResult } = data;
+    let msg = '**البيانات:**\n\n';
+
+    if (task) {
+      msg += `name: ${assignee?.name || userName}\n`;
+      msg += `task_name: ${task.name}\n`;
+      msg += `priority: ${task.priority_label || 'عادية'}\n`;
+      msg += `weight: ${task.ai_weight || 10}\n`;
+      msg += `complexity: ${this.translateComplexity(task.ai_complexity || 'medium')}\n`;
+
+      if (task.ai_estimated_time) {
+        msg += `estimated_time: • الوقت المتوقع: ${task.ai_estimated_time} دقيقة ⏱️\n`;
+      } else {
+        msg += `estimated_time: \n`;
+      }
+
+      if (task.due_date) {
+        const daysUntil = Math.ceil((new Date(parseInt(task.due_date)) - Date.now()) / (1000 * 60 * 60 * 24));
+        msg += `due_date: • الموعد النهائي: بعد ${daysUntil} ${daysUntil === 1 ? 'يوم' : 'أيام'}\n`;
+      } else {
+        msg += `due_date: \n`;
+      }
+
+      msg += `url: ${task.url}\n`;
     }
 
-    try {
-      const systemPrompt = `أنت مساعد إنتاجية. اقترح نصيحة عملية قصيرة (جملة واحدة) بالعربية لشخص تم تكليفه بمهمة.`;
+    if (gamificationResult) {
+      msg += `points: ${gamificationResult.pointsEarned}\n`;
 
-      const userMessage = `المستخدم: ${assignee.name}
-المهمة: ${task.name}
-الأولوية: ${task.priority_label || 'عادية'}
-الوزن: ${task.ai_weight || 10} نقطة
-التعقيد: ${task.ai_complexity || 'medium'}
-الوقت المتوقع: ${task.ai_estimated_time || 30} دقيقة
+      if (gamificationResult.newBadges?.length > 0) {
+        msg += `badges: • ${gamificationResult.newBadges.length} وسام جديد! 🏆\n`;
+        gamificationResult.newBadges.forEach(b => {
+          msg += `  - ${b.name} ${b.emoji || '⭐'}\n`;
+        });
+      } else {
+        msg += `badges: \n`;
+      }
 
-اقترح نصيحة عملية واحدة للبدء بهذه المهمة.`;
-
-      const aiTip = await aiService.generateCompletion(
-        systemPrompt,
-        userMessage,
-        { temperature: 0.7, max_tokens: 100 }
-      );
-
-      logger.debug('AI assignment tip generated', {
-        taskId: task.id,
-        assignee: assignee.name
-      });
-
-      return aiTip;
-    } catch (error) {
-      logger.error('AI tip generation failed, using default', {
-        error: error.message
-      });
-      return null; // Fallback to default message
+      if (gamificationResult.shieldUpgrade) {
+        msg += `shield: • ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
+      } else {
+        msg += `shield: \n`;
+      }
     }
+
+    msg += '\n**املأ القالب الآن:**';
+    return msg;
   }
 }
 

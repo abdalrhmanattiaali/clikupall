@@ -350,6 +350,7 @@ async function processWebhook(req, res, options = {}) {
     }
 
     const historyItem = body.history_items?.[0];
+    let assigneeChange = extractAssigneeChanges(historyItem);
     let effectiveEvent = event;
 
     if (!forcedTrigger) {
@@ -357,7 +358,8 @@ async function processWebhook(req, res, options = {}) {
         task,
         historyItem,
         originalEvent,
-        isAutomation: Boolean(body.auto_id && body.trigger_id)
+        isAutomation: Boolean(body.auto_id && body.trigger_id),
+        assigneeChange
       });
 
       if (refinement.event !== effectiveEvent) {
@@ -373,12 +375,15 @@ async function processWebhook(req, res, options = {}) {
           endpoint
         });
       }
+
+      if (refinement.assigneeChange) {
+        assigneeChange = refinement.assigneeChange;
+      }
     }
 
 
     if (requireAssigneeChange) {
-      const afterAssignee = historyItem?.after?.assignee || historyItem?.assignee?.after || historyItem?.value?.after;
-      if (!afterAssignee) {
+      if (!assigneeChange || assigneeChange.added.length === 0) {
         logger.info('Assignment endpoint received payload without assignee change', {
           taskId,
           endpoint
@@ -422,7 +427,8 @@ async function processWebhook(req, res, options = {}) {
         previousTask,
         originalEvent,
         endpoint,
-        webhookId
+        webhookId,
+        assigneeChange
       });
     } catch (handlerError) {
       logger.error('Event handler failed', {
@@ -510,11 +516,35 @@ function refineDetectedEvent(event, context = {}) {
 
   let finalEvent = event;
   const { task, historyItem } = context;
+  const assigneeChange = context.assigneeChange || extractAssigneeChanges(historyItem);
+
+  const fieldHint = (historyItem?.field || historyItem?.type || '').toLowerCase();
+  const hasAssigneeMutation = assigneeChange.added.length > 0 || assigneeChange.removed.length > 0 || fieldHint.includes('assignee');
+
+  if (hasAssigneeMutation) {
+    if (assigneeChange.added.length > 0 && assigneeChange.removed.length === 0) {
+      finalEvent = TRIGGER_TYPES.ASSIGNEE_ADDED;
+      result.reasons.push('assignee_added_detected');
+    } else if (assigneeChange.removed.length > 0 && assigneeChange.added.length === 0) {
+      finalEvent = TRIGGER_TYPES.ASSIGNEE_REMOVED;
+      result.reasons.push('assignee_removed_detected');
+    } else if (assigneeChange.added.length > 0 && assigneeChange.removed.length > 0) {
+      finalEvent = TRIGGER_TYPES.ASSIGNEE_ADDED;
+      result.reasons.push('assignee_reassignment_detected');
+    }
+
+    result.assigneeChange = assigneeChange;
+  }
 
   const statusName = task.status_name || task.status?.status || historyItem?.after?.status || historyItem?.before?.status || '';
   const statusType = task.status?.type || historyItem?.after?.status_type || historyItem?.after?.type || historyItem?.before?.status_type || '';
 
-  if (isNonOpenStatus(statusName, statusType) && finalEvent !== TRIGGER_TYPES.STATUS_CHANGED) {
+  if (
+    isNonOpenStatus(statusName, statusType)
+    && finalEvent !== TRIGGER_TYPES.STATUS_CHANGED
+    && finalEvent !== TRIGGER_TYPES.ASSIGNEE_ADDED
+    && finalEvent !== TRIGGER_TYPES.ASSIGNEE_REMOVED
+  ) {
     finalEvent = TRIGGER_TYPES.STATUS_CHANGED;
     result.reasons.push('task_in_closed_state');
   }
@@ -553,6 +583,7 @@ function refineDetectedEvent(event, context = {}) {
  */
 async function routeToHandler(event, body, task, context = {}) {
   const historyItem = body.history_items?.[0];
+  const assigneeChange = context.assigneeChange || extractAssigneeChanges(historyItem);
 
   // Get user who made the change - try multiple sources
   let changedBy = 'غير معروف';
@@ -568,7 +599,8 @@ async function routeToHandler(event, body, task, context = {}) {
     ...context,
     historyItem,
     changedBy,
-    body
+    body,
+    assigneeChange
   };
 
   switch (event) {
@@ -577,10 +609,10 @@ async function routeToHandler(event, body, task, context = {}) {
       return await handleTaskCreated(task, body, handlerContext);
 
     case TRIGGER_TYPES.ASSIGNEE_ADDED:
-      return await handleAssigneeAdded(task, historyItem, changedBy);
+      return await handleAssigneeAdded(task, historyItem, changedBy, handlerContext);
 
     case TRIGGER_TYPES.ASSIGNEE_REMOVED:
-      return await handleAssigneeRemoved(task, historyItem, changedBy);
+      return await handleAssigneeRemoved(task, historyItem, changedBy, handlerContext);
 
     case TRIGGER_TYPES.STATUS_CHANGED:
       return await handleStatusChanged(task, historyItem, changedBy, handlerContext);
@@ -695,55 +727,110 @@ async function handleTaskCreated(task, body, context = {}) {
 /**
  * Handle assignee added
  */
-async function handleAssigneeAdded(task, historyItem, changedBy) {
-  const newAssignee = historyItem?.after?.assignee;
-  if (!newAssignee) return;
+async function handleAssigneeAdded(task, historyItem, changedBy, context = {}) {
+  const changeDetails = context.assigneeChange || extractAssigneeChanges(historyItem);
+  let newAssignees = changeDetails.added;
 
-  const member = findMemberById(newAssignee.id) || findMemberByEmail(newAssignee.email);
-  const assigneeInfo = member ? {
-    id: member.id,
-    name: member.name,
-    phone: member.phone,
-    email: member.email
-  } : {
-    id: newAssignee.id,
-    name: newAssignee.username,
-    email: newAssignee.email
-  };
+  if (newAssignees.length === 0 && changeDetails.after.length > 0 && changeDetails.before.length === 0) {
+    newAssignees = changeDetails.after;
+  }
+
+  if (newAssignees.length === 0) {
+    const fallback = gatherAssigneeCandidates(
+      historyItem?.after?.assignee,
+      historyItem?.value?.after?.assignee,
+      historyItem?.after?.assignees,
+      historyItem?.value?.after?.assignees
+    );
+    if (fallback.length > 0) {
+      newAssignees = fallback;
+    }
+  }
+
+  if (!newAssignees || newAssignees.length === 0) {
+    logger.debug('No new assignees detected in assignment handler', {
+      taskId: task.id
+    });
+    return;
+  }
+
+  const enrichedAssignees = newAssignees
+    .map(candidate => resolveAssigneeInfo(candidate))
+    .filter(Boolean);
+
+  if (enrichedAssignees.length === 0) {
+    logger.debug('No enrichable assignee info for assignment event', { taskId: task.id });
+    return;
+  }
 
   // Emit event for notification service
   eventBus.emitEvent(EVENTS.TASK_ASSIGNED, {
     task,
-    assignees: [assigneeInfo],
+    assignees: enrichedAssignees,
     assignedBy: changedBy
   });
 
   logger.success('Assignee added event emitted', {
     taskId: task.id,
-    assignee: assigneeInfo.name
+    assignees: enrichedAssignees.map(assignee => assignee.name).join(', '),
+    count: enrichedAssignees.length
   });
 }
 
 /**
  * Handle assignee removed
  */
-async function handleAssigneeRemoved(task, historyItem, changedBy) {
-  const removedAssignee = historyItem?.before?.assignee;
-  if (!removedAssignee) return;
+async function handleAssigneeRemoved(task, historyItem, changedBy, context = {}) {
+  const changeDetails = context.assigneeChange || extractAssigneeChanges(historyItem);
+  let removedAssignees = changeDetails.removed;
 
-  const member = findMemberById(removedAssignee.id) || findMemberByEmail(removedAssignee.email);
-  const assigneeName = member?.name || removedAssignee.username;
+  if (removedAssignees.length === 0 && changeDetails.before.length > 0 && changeDetails.after.length === 0) {
+    removedAssignees = changeDetails.before;
+  }
+
+  if (removedAssignees.length === 0) {
+    const fallback = gatherAssigneeCandidates(
+      historyItem?.before?.assignee,
+      historyItem?.value?.before?.assignee,
+      historyItem?.before?.assignees,
+      historyItem?.value?.before?.assignees
+    );
+    if (fallback.length > 0) {
+      removedAssignees = fallback;
+    }
+  }
+
+  if (!removedAssignees || removedAssignees.length === 0) {
+    logger.debug('No removed assignees detected in assignment removal handler', {
+      taskId: task.id
+    });
+    return;
+  }
+
+  const removedNames = removedAssignees
+    .map(candidate => resolveAssigneeInfo(candidate))
+    .filter(Boolean)
+    .map(resolved => resolved.name)
+    .filter(Boolean);
+
+  if (removedNames.length === 0) {
+    logger.debug('Unable to resolve removed assignee names', { taskId: task.id });
+    return;
+  }
+
+  const uniqueNames = Array.from(new Set(removedNames));
 
   // Emit event for notification service
   eventBus.emitEvent(EVENTS.TASK_UNASSIGNED, {
     task,
-    assigneeName,
+    assigneeName: uniqueNames.join('، '),
     unassignedBy: changedBy
   });
 
   logger.success('Assignee removed event emitted', {
     taskId: task.id,
-    assignee: assigneeName
+    assignees: uniqueNames.join(', '),
+    count: uniqueNames.length
   });
 }
 
@@ -1138,6 +1225,238 @@ async function handleCommentPosted(task, body, changedBy) {
 /**
  * Get assignees with full team member info
  */
+function buildAssigneeKey(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  if (candidate.id !== null && candidate.id !== undefined && candidate.id !== '') {
+    return `id:${candidate.id}`;
+  }
+
+  if (candidate.email) {
+    return `email:${candidate.email.toLowerCase()}`;
+  }
+
+  if (candidate.name) {
+    return `name:${candidate.name.toLowerCase()}`;
+  }
+
+  return null;
+}
+
+function normalizeAssigneeCandidate(raw) {
+  if (!raw) {
+    return null;
+  }
+
+  if (typeof raw === 'string') {
+    const parsed = tryParseJson(raw);
+    if (parsed && typeof parsed === 'object') {
+      return normalizeAssigneeCandidate(parsed);
+    }
+    return null;
+  }
+
+  if (Array.isArray(raw)) {
+    return null;
+  }
+
+  if (typeof raw !== 'object') {
+    return null;
+  }
+
+  const id = raw.id ?? raw.user_id ?? raw.userid ?? raw.userId ?? raw.member_id ?? raw.person_id ?? raw.assignee_id ?? null;
+  const email = raw.email ?? raw.user_email ?? raw.mail ?? null;
+  const username = raw.username ?? raw.name ?? raw.full_name ?? raw.display_name ?? raw.handle ?? null;
+  const phone = raw.phone ?? null;
+
+  if (id === null && !email && !username) {
+    return null;
+  }
+
+  const candidate = {
+    id,
+    email: email || null,
+    name: username || (email ? email.split('@')[0] : null)
+  };
+
+  if (phone) {
+    candidate.phone = phone;
+  }
+
+  return candidate;
+}
+
+function collectAssigneeCandidates(source, results, seenKeys) {
+  if (!source) {
+    return;
+  }
+
+  if (typeof source === 'string') {
+    const parsed = tryParseJson(source);
+    if (parsed) {
+      collectAssigneeCandidates(parsed, results, seenKeys);
+    }
+    return;
+  }
+
+  if (Array.isArray(source)) {
+    source.forEach(item => collectAssigneeCandidates(item, results, seenKeys));
+    return;
+  }
+
+  if (typeof source !== 'object') {
+    return;
+  }
+
+  const candidate = normalizeAssigneeCandidate(source);
+  if (candidate) {
+    const key = buildAssigneeKey(candidate);
+    if (key && !seenKeys.has(key)) {
+      seenKeys.add(key);
+      results.push(candidate);
+    }
+  }
+
+  const nestedKeys = [
+    'assignee',
+    'assignees',
+    'value',
+    'values',
+    'added',
+    'removed',
+    'new',
+    'old',
+    'current',
+    'previous',
+    'users',
+    'members'
+  ];
+
+  for (const key of nestedKeys) {
+    if (source[key]) {
+      collectAssigneeCandidates(source[key], results, seenKeys);
+    }
+  }
+}
+
+function gatherAssigneeCandidates(...sources) {
+  const results = [];
+  const seenKeys = new Set();
+  sources.forEach(source => collectAssigneeCandidates(source, results, seenKeys));
+  return results;
+}
+
+function resolveAssigneeInfo(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  const numericId = Number(candidate.id);
+  const normalizedId = Number.isFinite(numericId) ? numericId : null;
+
+  const member = (normalizedId !== null ? findMemberById(normalizedId) : null)
+    || (candidate.email ? findMemberByEmail(candidate.email) : null);
+
+  if (member) {
+    return {
+      id: member.id,
+      name: member.name,
+      phone: member.phone,
+      email: member.email
+    };
+  }
+
+  const fallbackName = candidate.name || candidate.email || (normalizedId !== null ? `عضو ${normalizedId}` : null);
+
+  if (!fallbackName) {
+    return null;
+  }
+
+  const resolved = {
+    id: normalizedId ?? candidate.id ?? null,
+    name: fallbackName,
+    email: candidate.email || null
+  };
+
+  if (candidate.phone) {
+    resolved.phone = candidate.phone;
+  }
+
+  return resolved;
+}
+
+function extractAssigneeChanges(historyItem) {
+  if (!historyItem) {
+    return {
+      added: [],
+      removed: [],
+      before: [],
+      after: []
+    };
+  }
+
+  const afterCandidates = gatherAssigneeCandidates(
+    historyItem.after,
+    historyItem.after?.assignee,
+    historyItem.after?.assignees,
+    historyItem.value?.after,
+    historyItem.value?.after?.assignee,
+    historyItem.value?.after?.assignees,
+    historyItem.assignee?.after,
+    historyItem.assignee?.new
+  );
+
+  const beforeCandidates = gatherAssigneeCandidates(
+    historyItem.before,
+    historyItem.before?.assignee,
+    historyItem.before?.assignees,
+    historyItem.value?.before,
+    historyItem.value?.before?.assignee,
+    historyItem.value?.before?.assignees,
+    historyItem.assignee?.before,
+    historyItem.assignee?.old
+  );
+
+  const beforeMap = new Map();
+  beforeCandidates.forEach(candidate => {
+    const key = buildAssigneeKey(candidate);
+    if (key) {
+      beforeMap.set(key, candidate);
+    }
+  });
+
+  const afterMap = new Map();
+  afterCandidates.forEach(candidate => {
+    const key = buildAssigneeKey(candidate);
+    if (key) {
+      afterMap.set(key, candidate);
+    }
+  });
+
+  const added = [];
+  afterMap.forEach((candidate, key) => {
+    if (!beforeMap.has(key)) {
+      added.push(candidate);
+    }
+  });
+
+  const removed = [];
+  beforeMap.forEach((candidate, key) => {
+    if (!afterMap.has(key)) {
+      removed.push(candidate);
+    }
+  });
+
+  return {
+    added,
+    removed,
+    before: beforeCandidates,
+    after: afterCandidates
+  };
+}
+
 function getAssigneesWithInfo(task) {
   let assigneeIds = task.assignee_ids;
 

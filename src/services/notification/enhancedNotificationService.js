@@ -188,10 +188,11 @@ class EnhancedNotificationService {
 
     // Send DM to task completer with achievements and tips
     const assignees = this.getAssigneesFromTask(task);
-    if (assignees.length > 0 && gamificationResult) {
+    if (assignees.length > 0) {
       for (const assignee of assignees) {
         if (assignee.phone) {
-          const dmMessage = await this.buildCompletionDM(task, assignee, gamificationResult);
+          const completionMeta = gamificationResult || { pointsEarned: 0, newBadges: [], shieldUpgrade: null };
+          const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta);
           await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
       }
@@ -859,22 +860,24 @@ class EnhancedNotificationService {
       return aiMessage;
     }
 
+    const safeGamification = gamificationResult || { pointsEarned: 0, newBadges: [], shieldUpgrade: null };
+
     // Fallback: default message
     let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
     message += `✅ لقد أكملت: *${task.name}*\n\n`;
 
     message += `*المكافآت:*\n`;
-    message += `• ${gamificationResult.pointsEarned} نقطة 🎯\n`;
+    message += `• ${safeGamification.pointsEarned || 0} نقطة 🎯\n`;
 
-    if (gamificationResult.newBadges && gamificationResult.newBadges.length > 0) {
-      message += `• ${gamificationResult.newBadges.length} وسام جديد! 🏆\n`;
-      gamificationResult.newBadges.forEach(badge => {
+    if (safeGamification.newBadges && safeGamification.newBadges.length > 0) {
+      message += `• ${safeGamification.newBadges.length} وسام جديد! 🏆\n`;
+      safeGamification.newBadges.forEach(badge => {
         message += `  - ${badge.name} ${badge.emoji || '⭐'}\n`;
       });
     }
 
-    if (gamificationResult.shieldUpgrade) {
-      message += `• ترقية درع: ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
+    if (safeGamification.shieldUpgrade?.to?.name) {
+      message += `• ترقية درع: ${safeGamification.shieldUpgrade.to.name} 🛡️\n`;
     }
 
     // Fallback random tip

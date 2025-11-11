@@ -11,7 +11,7 @@ import taskWeightingService from '../services/ai/taskWeightingService.js';
 import gamificationService from '../services/gamification/gamificationService.js';
 import databaseService from '../database/index.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
-import { TASK_STATUS } from '../config/constants.js';
+import { isNonOpenStatus } from '../config/constants.js';
 
 // Event trigger types mapping
 const TRIGGER_TYPES = {
@@ -121,15 +121,16 @@ async function processWebhook(req, res, options = {}) {
       // 2. Then check if it's a new task
       // 3. Otherwise it's a status change
 
-      const taskStatus = taskData.status?.status?.toLowerCase().trim();
-      isCompletedAutomation = taskStatus && TASK_STATUS.NON_OPEN.includes(taskStatus);
+      const taskStatusName = taskData.status?.status;
+      const taskStatusType = taskData.status?.type;
+      isCompletedAutomation = isNonOpenStatus(taskStatusName, taskStatusType);
 
       if (isCompletedAutomation) {
         // Task is completed - always handle as status change
         // (handleStatusChanged will emit TASK_COMPLETED event)
         event = TRIGGER_TYPES.STATUS_CHANGED;
         originalEvent = event;
-        logger.debug('Completed task detected in automation webhook', { taskId, status: taskStatus, endpoint });
+        logger.debug('Completed task detected in automation webhook', { taskId, status: taskStatusName, endpoint });
       } else {
         // Not completed - check if it's new or existing task
         const dateCreated = taskData.date_created ? parseInt(taskData.date_created) : 0;
@@ -210,14 +211,16 @@ async function processWebhook(req, res, options = {}) {
     }
 
     if (requireCompletion) {
-      const currentStatus = (task.status_name || task.status?.status || '').toLowerCase().trim();
-      if (!TASK_STATUS.NON_OPEN.includes(currentStatus)) {
+      const currentStatusName = task.status_name || task.status?.status || '';
+      const currentStatusType = task.status?.type;
+      if (!isNonOpenStatus(currentStatusName, currentStatusType)) {
         logger.info('Completion endpoint received non-completed task', {
           taskId,
-          status: currentStatus,
+          status: currentStatusName,
+          statusType: currentStatusType,
           endpoint
         });
-        return res.status(202).json({ success: true, ignored: true, reason: 'task_not_completed', status: currentStatus, endpoint });
+        return res.status(202).json({ success: true, ignored: true, reason: 'task_not_completed', status: currentStatusName, endpoint });
       }
     }
 
@@ -227,6 +230,31 @@ async function processWebhook(req, res, options = {}) {
     }
 
     const historyItem = body.history_items?.[0];
+    let effectiveEvent = event;
+
+    if (!forcedTrigger) {
+      const refinement = refineDetectedEvent(effectiveEvent, {
+        task,
+        historyItem,
+        originalEvent,
+        isAutomation: Boolean(body.auto_id && body.trigger_id)
+      });
+
+      if (refinement.event !== effectiveEvent) {
+        const previousEvent = effectiveEvent;
+        effectiveEvent = refinement.event;
+
+        logger.info('Webhook event reclassified after inspection', {
+          taskId,
+          from: previousEvent,
+          to: effectiveEvent,
+          reasons: refinement.reasons,
+          originalEvent,
+          endpoint
+        });
+      }
+    }
+
 
     if (requireAssigneeChange) {
       const afterAssignee = historyItem?.after?.assignee || historyItem?.assignee?.after || historyItem?.value?.after;
@@ -243,8 +271,8 @@ async function processWebhook(req, res, options = {}) {
     const eventData = {
       event_id: body.webhook_id || body.trigger_id || `${taskId}_${Date.now()}`,
       task_id: taskId,
-      trigger_type: event,
-      trigger_category: categorizeTrigger(event),
+      trigger_type: effectiveEvent,
+      trigger_category: categorizeTrigger(effectiveEvent),
       changed_by_id: historyItem?.user?.id?.toString() || taskData?.creator?.id?.toString() || null,
       changed_by_username: historyItem?.user?.username || taskData?.creator?.username || null,
       changed_at: historyItem?.date ? parseInt(historyItem.date) : (body.date ? new Date(body.date).getTime() : Date.now()),
@@ -270,10 +298,10 @@ async function processWebhook(req, res, options = {}) {
 
     // Route to specific handler
     try {
-      await routeToHandler(event, body, task);
+      await routeToHandler(effectiveEvent, body, task);
     } catch (handlerError) {
       logger.error('Event handler failed', {
-        event,
+        event: effectiveEvent,
         error: handlerError.message,
         stack: handlerError.stack,
         endpoint
@@ -281,7 +309,7 @@ async function processWebhook(req, res, options = {}) {
       // Continue anyway - don't fail the webhook
     }
 
-    res.status(200).json({ success: true, event, taskId, webhookId, endpoint });
+    res.status(200).json({ success: true, event: effectiveEvent, taskId, webhookId, endpoint });
   } catch (error) {
     logger.error('Webhook handling error', {
       error: error.message,
@@ -343,6 +371,56 @@ function categorizeTrigger(event) {
   if (event.includes('subtask') || event.includes('Subtask')) return TRIGGER_CATEGORIES.SUBTASKS;
   if (event.includes('comment') || event.includes('Comment')) return TRIGGER_CATEGORIES.COMMENTS;
   return TRIGGER_CATEGORIES.TASK_MANAGEMENT;
+}
+
+function refineDetectedEvent(event, context = {}) {
+  const result = {
+    event,
+    reasons: []
+  };
+
+  if (!context || !context.task) {
+    return result;
+  }
+
+  let finalEvent = event;
+  const { task, historyItem } = context;
+
+  const statusName = task.status_name || task.status?.status || historyItem?.after?.status || historyItem?.before?.status || '';
+  const statusType = task.status?.type || historyItem?.after?.status_type || historyItem?.after?.type || historyItem?.before?.status_type || '';
+
+  if (isNonOpenStatus(statusName, statusType) && finalEvent !== TRIGGER_TYPES.STATUS_CHANGED) {
+    finalEvent = TRIGGER_TYPES.STATUS_CHANGED;
+    result.reasons.push('task_in_closed_state');
+  }
+
+  if (finalEvent === TRIGGER_TYPES.TASK_CREATED) {
+    const createdAt = Number.parseInt(task.date_created, 10);
+    const updatedAt = Number.parseInt(task.date_updated, 10);
+    const changedField = (historyItem?.field || historyItem?.type || '').toLowerCase();
+
+    if (changedField.includes('status')) {
+      finalEvent = TRIGGER_TYPES.STATUS_CHANGED;
+      result.reasons.push('history_indicates_status_change');
+    } else {
+      const now = Date.now();
+      const creationAge = Number.isFinite(createdAt) ? now - createdAt : null;
+      const updateDelta = Number.isFinite(createdAt) && Number.isFinite(updatedAt)
+        ? Math.abs(updatedAt - createdAt)
+        : null;
+
+      if (updateDelta !== null && updateDelta > 60000) {
+        finalEvent = TRIGGER_TYPES.STATUS_CHANGED;
+        result.reasons.push('update_far_after_creation');
+      } else if (creationAge !== null && creationAge > 5 * 60 * 1000) {
+        finalEvent = TRIGGER_TYPES.STATUS_CHANGED;
+        result.reasons.push('task_age_not_recent');
+      }
+    }
+  }
+
+  result.event = finalEvent;
+  return result;
 }
 
 /**
@@ -519,15 +597,17 @@ async function handleStatusChanged(task, historyItem, changedBy) {
   // For automation webhooks, historyItem might be null
   const beforeStatus = historyItem?.before?.status || 'unknown';
   const afterStatus = task.status_name || historyItem?.after?.status || 'unknown';
+  const afterStatusType = task.status?.type || historyItem?.after?.status_type || historyItem?.after?.type || '';
 
   logger.debug('Status change detected', {
     taskId: task.id,
     beforeStatus,
     afterStatus,
+    statusType: afterStatusType,
     isAutomation: !historyItem
   });
 
-  const isComplete = TASK_STATUS.NON_OPEN.includes(afterStatus.toLowerCase().trim());
+  const isComplete = isNonOpenStatus(afterStatus, afterStatusType);
 
   if (isComplete) {
     // Task completed - process gamification

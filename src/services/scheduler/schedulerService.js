@@ -16,7 +16,7 @@ import leaderboardService from '../gamification/leaderboardService.js';
 import behavioralService from '../ai/behavioralService.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import { TEAM } from '../../config/team.js';
-import { TASK_STATUS } from '../../config/constants.js';
+import { isNonOpenStatus } from '../../config/constants.js';
 import { isToday, calculatePercentage, generateProgressBar } from '../../utils/helpers.js';
 import { formatTaskList } from '../../utils/formatters.js';
 import { shortenUrl } from '../../utils/urlShortener.js';
@@ -254,7 +254,7 @@ class SchedulerService {
         const stats = await productivityRepo.getUserStats(member.name);
 
         const openTasks = allTasks.filter(t =>
-          !TASK_STATUS.NON_OPEN.includes(t.status?.status?.toLowerCase().trim())
+          !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
         const overdueTasks = openTasks.filter(t =>
@@ -363,7 +363,7 @@ class SchedulerService {
         const allTasks = await clickupService.getAllTasksForMember(member.id);
 
         const openTasks = allTasks.filter(t =>
-          !TASK_STATUS.NON_OPEN.includes(t.status?.status?.toLowerCase().trim())
+          !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
         const systemPrompt = `أنت مساعد تحليلي. اكتب ملخصاً قصيراً (3-4 جمل) عن أداء اليوم بطريقة تحفيزية.`;

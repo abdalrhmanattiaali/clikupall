@@ -603,12 +603,17 @@ async function routeToHandler(event, body, task, context = {}) {
     changedBy = body.payload.creator.username;
   }
 
+  const creatorInfo = context.creator
+    || getTaskCreatorInfo(task)
+    || (context.previousTask ? getTaskCreatorInfo(context.previousTask) : null);
+
   const handlerContext = {
     ...context,
     historyItem,
     changedBy,
     body,
-    assigneeChange
+    assigneeChange,
+    creator: creatorInfo
   };
 
   switch (event) {
@@ -848,6 +853,9 @@ async function handleAssigneeRemoved(task, historyItem, changedBy, context = {})
  */
 async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
   const assignees = getAssigneesWithInfo(task);
+  const creator = context.creator
+    || getTaskCreatorInfo(task)
+    || (context.previousTask ? getTaskCreatorInfo(context.previousTask) : null);
   const afterInfo = extractStatusInfo(
     historyItem?.after,
     historyItem?.after?.status,
@@ -945,7 +953,8 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       aiWeight: task.ai_weight || 10,
       points: gamificationResult?.pointsEarned,
       actionedBy,
-      creditedTo: completionTarget?.name || 'غير محدد'
+      creditedTo: completionTarget?.name || 'غير محدد',
+      creator: creator?.name || creator?.username || null
     });
   } else {
     eventBus.emitEvent(EVENTS.TASK_STATUS_CHANGED, {
@@ -967,7 +976,8 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       to: afterStatus,
       actionedBy,
       transition: isCancelled ? 'cancelled' : 'updated',
-      assignees: assignees.map(a => a.name)
+      assignees: assignees.map(a => a.name),
+      creator: creator?.name || creator?.username || null
     });
   }
 }

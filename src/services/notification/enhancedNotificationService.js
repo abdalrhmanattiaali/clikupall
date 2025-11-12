@@ -254,7 +254,15 @@ class EnhancedNotificationService {
     }
 
     // Check for duplicate
-    if (this.isDuplicateNotification(task.id, 'assigned')) {
+    const dedupeKey = assignees
+      .map(a => a.id || a.externalId || a.email || a.name)
+      .filter(Boolean)
+      .sort()
+      .join('|');
+
+    const dedupeOptions = dedupeKey ? { uniqueKey: dedupeKey } : undefined;
+
+    if (this.isDuplicateNotification(task.id, 'assigned', dedupeOptions)) {
       return; // Skip duplicate
     }
 
@@ -2082,11 +2090,14 @@ class EnhancedNotificationService {
    * @param {string} eventType - Event type (e.g., 'completed', 'assigned', 'created')
    * @returns {boolean} - True if duplicate, false if should send
    */
-  isDuplicateNotification(taskId, eventType) {
+  isDuplicateNotification(taskId, eventType, options = {}) {
     const now = Date.now();
+    const uniqueKey = options?.uniqueKey;
 
     // Check 1: Same event type duplicate (10 seconds window)
-    const eventKey = `${taskId}-${eventType}`;
+    const eventKey = uniqueKey
+      ? `${taskId}-${eventType}-${uniqueKey}`
+      : `${taskId}-${eventType}`;
     const lastSent = this.recentNotifications.get(eventKey);
 
     if (lastSent && (now - lastSent) < this.deduplicationWindow) {

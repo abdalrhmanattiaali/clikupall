@@ -351,6 +351,19 @@ async function processWebhook(req, res, options = {}) {
 
     const historyItem = body.history_items?.[0];
     let assigneeChange = extractAssigneeChanges(historyItem);
+
+    if (!assigneeChange || (assigneeChange.added.length === 0 && assigneeChange.removed.length === 0)) {
+      const snapshotChange = deriveAssigneeDiffFromTasks(previousTask, task);
+      if (snapshotChange.added.length > 0 || snapshotChange.removed.length > 0) {
+        assigneeChange = snapshotChange;
+        logger.info('Assignee change inferred from task snapshots', {
+          taskId,
+          endpoint,
+          added: snapshotChange.added.map(candidate => candidate.name || candidate.email || candidate.id),
+          removed: snapshotChange.removed.map(candidate => candidate.name || candidate.email || candidate.id)
+        });
+      }
+    }
     let effectiveEvent = event;
 
     if (!forcedTrigger) {
@@ -1758,6 +1771,117 @@ function extractAssigneeChanges(historyItem) {
     historyItem.assignee?.before,
     historyItem.assignee?.old
   );
+
+  const beforeMap = new Map();
+  beforeCandidates.forEach(candidate => {
+    const key = buildAssigneeKey(candidate);
+    if (key) {
+      beforeMap.set(key, candidate);
+    }
+  });
+
+  const afterMap = new Map();
+  afterCandidates.forEach(candidate => {
+    const key = buildAssigneeKey(candidate);
+    if (key) {
+      afterMap.set(key, candidate);
+    }
+  });
+
+  const added = [];
+  afterMap.forEach((candidate, key) => {
+    if (!beforeMap.has(key)) {
+      added.push(candidate);
+    }
+  });
+
+  const removed = [];
+  beforeMap.forEach((candidate, key) => {
+    if (!afterMap.has(key)) {
+      removed.push(candidate);
+    }
+  });
+
+  return {
+    added,
+    removed,
+    before: beforeCandidates,
+    after: afterCandidates
+  };
+}
+
+function collectTaskAssigneeCandidates(task) {
+  if (!task) {
+    return [];
+  }
+
+  const parsedAssigneeIds = (() => {
+    if (!task.assignee_ids) {
+      return [];
+    }
+
+    if (Array.isArray(task.assignee_ids)) {
+      return task.assignee_ids;
+    }
+
+    if (typeof task.assignee_ids === 'string') {
+      const parsed = tryParseJson(task.assignee_ids);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+
+    if (typeof task.assignee_ids === 'object') {
+      const values = Object.values(task.assignee_ids);
+      return values.flatMap(value => (Array.isArray(value) ? value : [value]));
+    }
+
+    return [];
+  })();
+
+  const normalizedFromIds = parsedAssigneeIds
+    .map(id => normalizeAssigneeCandidate({ id }))
+    .filter(Boolean);
+
+  const candidateSources = [
+    task.assignees,
+    task.assignee,
+    task.assigned_to,
+    task.members,
+    task.assignees_list,
+    task.assignment,
+    task.assignments
+  ];
+
+  const combined = [
+    ...gatherAssigneeCandidates(...candidateSources),
+    ...normalizedFromIds
+  ];
+
+  const unique = [];
+  const seen = new Set();
+
+  combined.forEach(candidate => {
+    const key = buildAssigneeKey(candidate);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      unique.push(candidate);
+    }
+  });
+
+  return unique;
+}
+
+function deriveAssigneeDiffFromTasks(previousTask, currentTask) {
+  const beforeCandidates = collectTaskAssigneeCandidates(previousTask);
+  const afterCandidates = collectTaskAssigneeCandidates(currentTask);
+
+  if (beforeCandidates.length === 0 && afterCandidates.length === 0) {
+    return {
+      added: [],
+      removed: [],
+      before: [],
+      after: []
+    };
+  }
 
   const beforeMap = new Map();
   beforeCandidates.forEach(candidate => {

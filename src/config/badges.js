@@ -2,7 +2,7 @@
  * Badge Definitions
  * تعريف جميع الأوسمة والإنجازات في النظام
  *
- * 6 Categories with 50+ Badges Total
+ * 6 Categories with 40+ Badges Total
  */
 
 export const BADGE_CATEGORIES = {

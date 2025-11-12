@@ -165,11 +165,12 @@ class EnhancedNotificationService {
    * Handle task completed
    */
   async handleTaskCompleted(data) {
-    const { task, gamificationResult } = data;
+    const { task, gamificationResult, creator, beforeStatus, afterStatus } = data;
     const actionedBy = data.actionedBy || data.userName || 'غير معروف';
     const assignees = Array.isArray(data.assignees) && data.assignees.length > 0
       ? data.assignees
       : this.getAssigneesFromTask(task);
+    const creatorInfo = creator || null;
 
     // Check for duplicate
     if (this.isDuplicateNotification(task.id, 'completed')) {
@@ -202,6 +203,33 @@ class EnhancedNotificationService {
           const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta, actionedBy);
           await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
+      }
+    }
+
+    if (creatorInfo && this.shouldNotifyCreator(creatorInfo, assignees)) {
+      if (creatorInfo.phone) {
+        const creatorMessage = await this.buildCreatorCompletionDM(
+          task,
+          creatorInfo,
+          assignees,
+          actionedBy,
+          gamificationResult,
+          beforeStatus,
+          afterStatus
+        );
+
+        await this.sendImmediateNotification(creatorMessage, 'user', creatorInfo.phone);
+
+        logger.info('Sent creator completion follow-up DM', {
+          taskId: task.id,
+          creator: creatorInfo.name,
+          assignees: assignees.map(a => a.name)
+        });
+      } else {
+        logger.debug('Creator eligible for completion follow-up but no phone available', {
+          taskId: task.id,
+          creator: creatorInfo.name
+        });
       }
     }
 
@@ -281,10 +309,11 @@ class EnhancedNotificationService {
    * Handle task status changed
    */
   async handleTaskStatusChanged(data) {
-    const { task, beforeStatus, afterStatus } = data;
+    const { task, beforeStatus, afterStatus, creator } = data;
     const actionedBy = data.actionedBy || data.userName || 'غير معروف';
     const assignees = Array.isArray(data.assignees) ? data.assignees : [];
     const transitionType = data.transitionType || 'progress';
+    const creatorInfo = creator || null;
 
     const normalizedBefore = (beforeStatus || '').toString().trim().toLowerCase();
     const normalizedAfter = (afterStatus || '').toString().trim().toLowerCase();
@@ -322,6 +351,34 @@ class EnhancedNotificationService {
       from: beforeStatus,
       to: afterStatus
     });
+
+    if (creatorInfo && this.shouldNotifyCreator(creatorInfo, assignees)) {
+      if (creatorInfo.phone) {
+        const creatorMessage = await this.buildCreatorStatusDM(
+          task,
+          creatorInfo,
+          beforeStatus,
+          afterStatus,
+          actionedBy,
+          assignees,
+          transitionType
+        );
+
+        await this.sendImmediateNotification(creatorMessage, 'user', creatorInfo.phone);
+
+        logger.info('Sent creator status follow-up DM', {
+          taskId: task.id,
+          creator: creatorInfo.name,
+          beforeStatus,
+          afterStatus
+        });
+      } else {
+        logger.debug('Creator eligible for status follow-up but no phone available', {
+          taskId: task.id,
+          creator: creatorInfo.name
+        });
+      }
+    }
   }
 
   /**
@@ -1056,6 +1113,227 @@ class EnhancedNotificationService {
     message += `🔥 استمر في الإنجاز!`;
 
     return message;
+  }
+
+  async buildCreatorCompletionDM(task, creator, assignees, actionedBy, gamificationResult, beforeStatus, afterStatus) {
+    const aiMessage = await this.generateNotificationWithTemplate('creator_completion_dm', {
+      task,
+      creator,
+      assignees,
+      actionedBy,
+      gamificationResult,
+      beforeStatus,
+      afterStatus,
+      transitionType: 'closed'
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    const assigneeNames = Array.isArray(assignees) && assignees.length > 0
+      ? assignees.map(a => a.name).join(', ')
+      : 'غير محدد';
+    const prettyBefore = beforeStatus ? this.formatStatusLabel(beforeStatus) : null;
+    const prettyAfter = this.formatStatusLabel(afterStatus || 'مكتمل');
+    const rewards = this.buildCreatorRewardsSummary(gamificationResult);
+    const highlight = this.buildCompletionHighlight(task, gamificationResult);
+    const nextStep = this.buildCreatorNextStep(task, 'closed', assignees, actionedBy, creator);
+
+    let message = `👋 *${creator.name || 'قائد المهمة'}*، تحديث حول المهمة التي أنشأتها.\n\n`;
+    message += `📝 ${task.name}\n`;
+
+    if (prettyBefore && prettyBefore !== prettyAfter) {
+      message += `🔄 الحالة: ${prettyBefore} → ${prettyAfter}\n`;
+    } else {
+      message += `🔄 الحالة: ${prettyAfter}\n`;
+    }
+
+    message += `👤 الإجراء بواسطة: ${actionedBy}\n`;
+
+    if (assigneeNames) {
+      message += `👥 المكلفون: ${assigneeNames}\n`;
+    }
+
+    if (rewards) {
+      message += `🎯 المكافآت: ${rewards}\n`;
+    }
+
+    if (highlight) {
+      message += `\n💡 ${highlight}\n`;
+    }
+
+    if (nextStep) {
+      message += `\n📌 ${nextStep}\n`;
+    }
+
+    message += `\n🔗 ${task.url}`;
+
+    return message;
+  }
+
+  async buildCreatorStatusDM(task, creator, beforeStatus, afterStatus, actionedBy, assignees, transitionType = 'progress') {
+    const aiMessage = await this.generateNotificationWithTemplate('creator_status_dm', {
+      task,
+      creator,
+      assignees,
+      beforeStatus,
+      afterStatus,
+      actionedBy,
+      transitionType
+    });
+
+    if (aiMessage) {
+      return aiMessage;
+    }
+
+    const assigneeNames = Array.isArray(assignees) && assignees.length > 0
+      ? assignees.map(a => a.name).join(', ')
+      : 'غير محدد';
+    const prettyBefore = this.formatStatusLabel(beforeStatus);
+    const prettyAfter = this.formatStatusLabel(afterStatus);
+    const dueInDays = this.calculateDueInDays(task);
+    const insight = this.buildStatusChangeInsight(task, beforeStatus, afterStatus, actionedBy);
+    const nextStep = this.buildCreatorNextStep(task, transitionType, assignees, actionedBy, creator);
+
+    let message = `👋 *${creator.name || 'قائد المهمة'}*، تحديث حول المهمة التي كلفت بها الفريق.\n\n`;
+    message += `📝 ${task.name}\n`;
+    message += `🔄 من: ${prettyBefore} → ${prettyAfter}\n`;
+    message += `👤 الإجراء بواسطة: ${actionedBy}\n`;
+
+    if (assigneeNames) {
+      message += `👥 المكلفون: ${assigneeNames}\n`;
+    }
+
+    if (typeof dueInDays === 'number') {
+      if (dueInDays <= 0) {
+        message += '⏱️ الموعد النهائي: اليوم\n';
+      } else {
+        message += `⏱️ الموعد النهائي: بعد ${dueInDays} ${dueInDays === 1 ? 'يوم' : 'أيام'}\n`;
+      }
+    } else {
+      message += '⏱️ الموعد النهائي: غير محدد\n';
+    }
+
+    if (insight) {
+      message += `\n💡 ${insight}\n`;
+    }
+
+    if (nextStep) {
+      message += `\n📌 ${nextStep}\n`;
+    }
+
+    message += `\n🔗 ${task.url}`;
+
+    return message;
+  }
+
+  shouldNotifyCreator(creator, assignees = []) {
+    if (!creator) {
+      return false;
+    }
+
+    if (!Array.isArray(assignees) || assignees.length === 0) {
+      return false;
+    }
+
+    return assignees.some(assignee => !this.isSamePerson(assignee, creator));
+  }
+
+  isSamePerson(candidateA, candidateB) {
+    if (!candidateA || !candidateB) {
+      return false;
+    }
+
+    const idA = candidateA.id ?? candidateA.externalId ?? null;
+    const idB = candidateB.id ?? candidateB.externalId ?? null;
+
+    if (idA !== null && idB !== null && String(idA) === String(idB)) {
+      return true;
+    }
+
+    if (candidateA.email && candidateB.email && candidateA.email.toLowerCase() === candidateB.email.toLowerCase()) {
+      return true;
+    }
+
+    if (candidateA.phone && candidateB.phone && candidateA.phone === candidateB.phone) {
+      return true;
+    }
+
+    if (candidateA.name && candidateB.name && candidateA.name.trim().toLowerCase() === candidateB.name.trim().toLowerCase()) {
+      return true;
+    }
+
+    return false;
+  }
+
+  buildCreatorNextStep(task, transitionType = 'progress', assignees = [], actionedBy = 'غير معروف', creator = null) {
+    const dueInDays = this.calculateDueInDays(task);
+    const followTarget = this.pickFollowUpTarget(assignees, creator);
+
+    if (transitionType === 'cancelled') {
+      return `تأكد من أن ${followTarget} وثّق سبب الإلغاء وشارك أي التزامات متبقية مع الفريق.`;
+    }
+
+    if (transitionType === 'closed') {
+      return `راجع مخرجات المهمة مع ${followTarget} وشارك ملاحظاتك خلال 24 ساعة لضمان جودة التسليم.`;
+    }
+
+    if (typeof dueInDays === 'number' && dueInDays <= 0) {
+      return `اطلب من ${followTarget} تحديثك بنتيجة اليوم لضمان تسليم المهمة في الموعد.`;
+    }
+
+    if (typeof dueInDays === 'number' && dueInDays <= 2) {
+      return `تابع مع ${followTarget} لضبط الأولويات قبل الموعد النهائي المتبقي (${dueInDays === 1 ? 'يوم واحد' : `${dueInDays} أيام`}).`;
+    }
+
+    if (transitionType === 'progress') {
+      return `تأكد من أن ${followTarget} يمتلك كل الموارد اللازمة وحدد نقطة مراجعة قادمة مع ${actionedBy}.`;
+    }
+
+    return `راجع خطة التنفيذ مع ${followTarget} واطلب توثيق التقدم القادم.`;
+  }
+
+  pickFollowUpTarget(assignees = [], creator = null) {
+    if (!Array.isArray(assignees) || assignees.length === 0) {
+      return 'الفريق';
+    }
+
+    const other = creator
+      ? assignees.find(assignee => !this.isSamePerson(assignee, creator))
+      : null;
+
+    if (other && other.name) {
+      return other.name;
+    }
+
+    return assignees[0].name || 'الفريق';
+  }
+
+  buildCreatorRewardsSummary(gamificationResult) {
+    if (!gamificationResult) {
+      return 'الإنجاز مسجل دون مكافآت إضافية بعد.';
+    }
+
+    const rewards = [];
+
+    if (typeof gamificationResult.pointsEarned === 'number') {
+      rewards.push(`${gamificationResult.pointsEarned} نقطة للفريق`);
+    }
+
+    if (Array.isArray(gamificationResult.newBadges) && gamificationResult.newBadges.length > 0) {
+      rewards.push(`${gamificationResult.newBadges.length} ${gamificationResult.newBadges.length === 1 ? 'وسام' : 'أوسمة'} جديدة`);
+    }
+
+    if (gamificationResult.shieldUpgrade?.to?.name) {
+      rewards.push(`ترقية الدرع إلى ${gamificationResult.shieldUpgrade.to.name}`);
+    }
+
+    if (rewards.length === 0) {
+      return 'الإنجاز مسجل دون مكافآت إضافية بعد.';
+    }
+
+    return rewards.join(' • ');
   }
 
   calculateDueInDays(task) {
@@ -2012,6 +2290,57 @@ class EnhancedNotificationService {
 **التعليمات:**
 - استخدم بيانات التحفيز لملء عناصر المكافآت (أكتب "لا يوجد" إذا غابت)
 - اجعل {highlight} يوضح قيمة الإنجاز أو الخطوة التالية للفريق`
+      ,
+      creator_completion_dm: `أنت مساعد إشعارات. أرسل رسالة خاصة لمنشئ المهمة لإعلامه بإكمالها.
+
+**القالب (التزم به تماماً):**
+👋 متابعة لمهمتك يا {creator_name}!
+
+📝 المهمة: {task_name}
+🔄 الحالة النهائية: {after_status} (بعد {before_status})
+👤 نفّذها: {actioned_by}
+👥 المكلفون: {assignee_names}
+
+🎯 ملخص المكافآت:
+{rewards}
+
+💡 أبرز ما تحقق:
+{impact}
+
+📌 الخطوة التالية لك:
+{next_step}
+
+🔗 {url}
+
+**التعليمات:**
+- التزم بالكامل بالهيكل والرموز التعبيرية
+- {rewards}: سطر واحد يصف النقاط/الأوسمة (اكتب "لا توجد مكافآت" إذا لم يوجد)
+- {impact}: جملة قصيرة تربط الإنجاز بالنتيجة النهائية
+- {next_step}: جملة عملية توضّح ما يجب على المنشئ متابعته`
+      ,
+      creator_status_dm: `أنت مساعد إشعارات. أرسل تحديث حالة لصاحب المهمة مع الحفاظ على القالب.
+
+**القالب (التزم به تماماً):**
+👋 تحديث لمهمتك يا {creator_name}!
+
+📝 المهمة: {task_name}
+🔄 من: {before_status} → إلى: {after_status}
+👤 الإجراء بواسطة: {actioned_by}
+👥 المكلفون: {assignee_names}
+⏱️ الموعد النهائي: {due_hint}
+
+💡 ماذا يعني هذا؟
+{impact}
+
+📌 ماذا تتابع بعد ذلك؟
+{next_step}
+
+🔗 {url}
+
+**التعليمات:**
+- استخدم البيانات لتوليد {impact} و{next_step} في جملة أو جملتين
+- إذا لم تتوفر قيمة ما فاستخدم عبارة "غير محدد"
+- تأكد من إبراز اسم الفاعل والمكلفين`
     };
 
     return templates[templateType] || templates.assignment_dm;
@@ -2032,7 +2361,8 @@ class EnhancedNotificationService {
       createdBy,
       actionedBy,
       assignedBy,
-      transitionType
+      transitionType,
+      creator
     } = data;
     let msg = '**البيانات:**\n\n';
 
@@ -2177,6 +2507,54 @@ class EnhancedNotificationService {
           }
 
           msg += `highlight_hint: ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
+      }
+
+      case 'creator_completion_dm': {
+        if (task) {
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : 'غير محدد';
+          msg += `creator_name: ${creator?.name || 'قائد المهمة'}\n`;
+          msg += `task_name: ${task.name}\n`;
+          msg += `before_status: ${beforeStatus || 'غير معروف'}\n`;
+          msg += `after_status: ${afterStatus || 'غير معروف'}\n`;
+          msg += `actioned_by: ${actionedBy || userName || 'غير معروف'}\n`;
+          msg += `assignee_names: ${assigneeNames}\n`;
+          msg += `rewards: ${this.buildCreatorRewardsSummary(gamificationResult)}\n`;
+          msg += `impact: ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
+          msg += `next_step: ${this.buildCreatorNextStep(task, 'closed', assignees, actionedBy, creator)}\n`;
+          msg += `url: ${task.url}\n`;
+        }
+
+        break;
+      }
+
+      case 'creator_status_dm': {
+        if (task) {
+          const assigneeNames = assignees.length ? assignees.map(a => a.name).join(', ') : 'غير محدد';
+          const dueInDays = this.calculateDueInDays(task);
+
+          msg += `creator_name: ${creator?.name || 'قائد المهمة'}\n`;
+          msg += `task_name: ${task.name}\n`;
+          msg += `before_status: ${beforeStatus || 'غير معروف'}\n`;
+          msg += `after_status: ${afterStatus || 'غير معروف'}\n`;
+          msg += `actioned_by: ${actionedBy || userName || 'غير معروف'}\n`;
+          msg += `assignee_names: ${assigneeNames}\n`;
+
+          if (typeof dueInDays === 'number') {
+            if (dueInDays <= 0) {
+              msg += 'due_hint: الموعد النهائي: اليوم\n';
+            } else {
+              msg += `due_hint: الموعد النهائي بعد ${dueInDays} ${dueInDays === 1 ? 'يوم' : 'أيام'}\n`;
+            }
+          } else {
+            msg += 'due_hint: الموعد النهائي غير محدد\n';
+          }
+
+          msg += `impact: ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, actionedBy || userName || 'غير معروف')}\n`;
+          msg += `next_step: ${this.buildCreatorNextStep(task, transitionType || 'progress', assignees, actionedBy, creator)}\n`;
           msg += `url: ${task.url}\n`;
         }
 

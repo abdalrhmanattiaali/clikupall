@@ -719,6 +719,7 @@ async function handleTaskCreated(task, body, context = {}) {
   }
 
   const assignees = getAssigneesWithInfo(task);
+  const creator = getTaskCreatorInfo(task);
   const createdBy = context.changedBy || task.creator_username || 'غير معروف';
 
   // Emit event for notification service to handle
@@ -933,7 +934,8 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       beforeStatus,
       afterStatus,
       completionTargetId: completionTarget?.id || null,
-      completionTargetName: completionTarget?.name || null
+      completionTargetName: completionTarget?.name || null,
+      creator
     });
 
     logger.success('Task completed event emitted', {
@@ -955,7 +957,8 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       beforeStatusType,
       afterStatusType,
       assignees,
-      transitionType: isCancelled ? 'cancelled' : (isComplete ? 'closed' : 'progress')
+      transitionType: isCancelled ? 'cancelled' : (isComplete ? 'closed' : 'progress'),
+      creator
     });
 
     logger.success('Task status changed event emitted', {

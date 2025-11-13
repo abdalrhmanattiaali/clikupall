@@ -165,12 +165,20 @@ class EnhancedNotificationService {
    * Handle task completed
    */
   async handleTaskCompleted(data) {
-    const { task, gamificationResult, creator, beforeStatus, afterStatus } = data;
+    const { task, creator, beforeStatus, afterStatus } = data;
     const actionedBy = data.actionedBy || data.userName || 'غير معروف';
     const assignees = Array.isArray(data.assignees) && data.assignees.length > 0
       ? data.assignees
       : this.getAssigneesFromTask(task);
     const creatorInfo = creator || null;
+    const completionBreakdown = Array.isArray(data.completionOutcomes)
+      ? data.completionOutcomes
+      : [];
+    const breakdownIndex = this.indexCompletionOutcomes(completionBreakdown);
+    const gamificationResult = this.aggregateGamificationFromBreakdown(
+      completionBreakdown,
+      data.gamificationResult || null
+    );
 
     // Check for duplicate
     if (this.isDuplicateNotification(task.id, 'completed')) {
@@ -185,22 +193,31 @@ class EnhancedNotificationService {
       points: gamificationResult?.pointsEarned || 0
     });
 
-    const groupMessage = await this.buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult);
+    const groupMessage = await this.buildTaskCompletedMessage(
+      task,
+      assignees,
+      actionedBy,
+      gamificationResult,
+      completionBreakdown
+    );
 
     // Add to batch queue for group
     this.addToQueue({
       type: 'task_completed',
       task,
       message: groupMessage,
-      data: { actionedBy, assignees, gamificationResult, userName: actionedBy }
+      data: { actionedBy, assignees, gamificationResult, userName: actionedBy, completionBreakdown }
     });
 
     // Send DM to task completer with achievements and tips
     if (assignees.length > 0) {
       for (const assignee of assignees) {
         if (assignee.phone) {
-          const completionMeta = gamificationResult || { pointsEarned: 0, newBadges: [], shieldUpgrade: null };
-          const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta, actionedBy);
+          const outcome = this.resolveCompletionOutcomeForAssignee(assignee, breakdownIndex);
+          const completionMeta = outcome?.gamificationResult
+            || gamificationResult
+            || { pointsEarned: 0, newBadges: [], shieldUpgrade: null };
+          const dmMessage = await this.buildCompletionDM(task, assignee, completionMeta, actionedBy, outcome);
           await this.sendImmediateNotification(dmMessage, 'user', assignee.phone);
         }
       }
@@ -215,7 +232,8 @@ class EnhancedNotificationService {
           actionedBy,
           gamificationResult,
           beforeStatus,
-          afterStatus
+          afterStatus,
+          completionBreakdown
         );
 
         await this.sendImmediateNotification(creatorMessage, 'user', creatorInfo.phone);
@@ -841,12 +859,13 @@ class EnhancedNotificationService {
   /**
    * Build task completed message
    */
-  async buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult) {
+  async buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult, completionBreakdown = []) {
     const aiMessage = await this.generateNotificationWithTemplate('task_completed_group', {
       task,
       assignees,
       actionedBy,
-      gamificationResult
+      gamificationResult,
+      completionBreakdown
     });
 
     if (aiMessage) {
@@ -867,15 +886,20 @@ class EnhancedNotificationService {
     message += `*الوزن:* ${aiWeight} نقطة 💎 (${this.translateComplexity(complexity)})\n`;
 
     if (gamificationResult) {
-      message += `*النقاط المكتسبة:* ${gamificationResult.pointsEarned} نقطة 🎯\n`;
+      message += `*النقاط المكتسبة:* ${gamificationResult.pointsEarned || 0} نقطة 🎯\n`;
 
-      if (gamificationResult.newBadges && gamificationResult.newBadges.length > 0) {
+      if (Array.isArray(gamificationResult.newBadges) && gamificationResult.newBadges.length > 0) {
         message += `*أوسمة جديدة:* ${gamificationResult.newBadges.length} 🏆\n`;
       }
 
-      if (gamificationResult.shieldUpgrade) {
+      if (gamificationResult.shieldUpgrade?.to?.name) {
         message += `*ترقية درع:* ${gamificationResult.shieldUpgrade.to.name} 🛡️\n`;
       }
+    }
+
+    if (Array.isArray(completionBreakdown) && completionBreakdown.length > 0) {
+      message += `\n🏅 *توزيع النقاط:*\n`;
+      message += `${this.formatCompletionBreakdown(completionBreakdown)}\n`;
     }
 
     message += `\n🎯 ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
@@ -1075,13 +1099,14 @@ class EnhancedNotificationService {
   /**
    * Build DM for task completion (AI-powered with strict template)
    */
-  async buildCompletionDM(task, assignee, gamificationResult, actionedBy = 'غير معروف') {
+  async buildCompletionDM(task, assignee, gamificationResult, actionedBy = 'غير معروف', completionOutcome = null) {
     // Try AI template-based generation first
     const aiMessage = await this.generateNotificationWithTemplate('completion_dm', {
       task,
       assignee,
       gamificationResult,
-      actionedBy
+      actionedBy,
+      completionOutcome
     });
 
     if (aiMessage) {
@@ -1123,7 +1148,7 @@ class EnhancedNotificationService {
     return message;
   }
 
-  async buildCreatorCompletionDM(task, creator, assignees, actionedBy, gamificationResult, beforeStatus, afterStatus) {
+  async buildCreatorCompletionDM(task, creator, assignees, actionedBy, gamificationResult, beforeStatus, afterStatus, completionBreakdown = []) {
     const aiMessage = await this.generateNotificationWithTemplate('creator_completion_dm', {
       task,
       creator,
@@ -1132,7 +1157,8 @@ class EnhancedNotificationService {
       gamificationResult,
       beforeStatus,
       afterStatus,
-      transitionType: 'closed'
+      transitionType: 'closed',
+      completionBreakdown
     });
 
     if (aiMessage) {
@@ -1169,6 +1195,11 @@ class EnhancedNotificationService {
 
     if (highlight) {
       message += `\n💡 ${highlight}\n`;
+    }
+
+    if (Array.isArray(completionBreakdown) && completionBreakdown.length > 0) {
+      message += `\n🏅 *تفاصيل الإنجاز:*\n`;
+      message += `${this.formatCompletionBreakdown(completionBreakdown)}\n`;
     }
 
     if (nextStep) {
@@ -1525,6 +1556,185 @@ class EnhancedNotificationService {
     return 'إغلاق مميز؛ حدّد الخطوة التالية أو أي متابعة مطلوبة للحفاظ على الزخم.';
   }
 
+  aggregateGamificationFromBreakdown(outcomes = [], fallback = null) {
+    if (!Array.isArray(outcomes) || outcomes.length === 0) {
+      return fallback || null;
+    }
+
+    const summary = {
+      pointsEarned: 0,
+      totalPoints: 0,
+      newBadges: [],
+      shieldUpgrade: null,
+      breakdown: []
+    };
+
+    outcomes.forEach(outcome => {
+      const assigneeName = outcome?.assignee?.name || outcome?.assigneeKey || 'عضو';
+      const points = outcome?.gamificationResult?.pointsEarned || 0;
+      summary.pointsEarned += points;
+      summary.totalPoints += points;
+
+      const decoratedBadges = Array.isArray(outcome?.gamificationResult?.newBadges)
+        ? outcome.gamificationResult.newBadges.map(badge => ({
+          ...badge,
+          awardedTo: assigneeName
+        }))
+        : [];
+
+      summary.newBadges.push(...decoratedBadges);
+
+      if (!summary.shieldUpgrade && outcome?.gamificationResult?.shieldUpgrade) {
+        summary.shieldUpgrade = {
+          ...outcome.gamificationResult.shieldUpgrade,
+          awardedTo: assigneeName
+        };
+      }
+
+      summary.breakdown.push({
+        assignee: outcome?.assignee || null,
+        assigneeKey: outcome?.assigneeKey || assigneeName,
+        points,
+        badges: decoratedBadges,
+        shieldUpgrade: outcome?.gamificationResult?.shieldUpgrade || null
+      });
+    });
+
+    if (fallback) {
+      return {
+        ...fallback,
+        ...summary,
+        newBadges: summary.newBadges.length > 0
+          ? summary.newBadges
+          : (fallback.newBadges || []),
+        shieldUpgrade: summary.shieldUpgrade || fallback.shieldUpgrade || null,
+        breakdown: summary.breakdown
+      };
+    }
+
+    return summary;
+  }
+
+  indexCompletionOutcomes(outcomes = []) {
+    const index = new Map();
+
+    if (!Array.isArray(outcomes)) {
+      return index;
+    }
+
+    outcomes.forEach((outcome) => {
+      if (!outcome) {
+        return;
+      }
+
+      const keys = new Set();
+
+      if (outcome.assignee) {
+        const participantKey = this.buildParticipantKey(outcome.assignee);
+        if (participantKey) {
+          keys.add(participantKey);
+        }
+
+        if (outcome.assignee.name) {
+          keys.add(`name:${outcome.assignee.name.trim().toLowerCase()}`);
+        }
+
+        if (outcome.assignee.username) {
+          keys.add(`name:${outcome.assignee.username.trim().toLowerCase()}`);
+        }
+
+        if (outcome.assignee.email) {
+          keys.add(`email:${outcome.assignee.email.toLowerCase()}`);
+        }
+
+        if (outcome.assignee.externalId) {
+          keys.add(`id:${outcome.assignee.externalId}`);
+        }
+      }
+
+      if (outcome.assigneeKey) {
+        const normalizedKey = String(outcome.assigneeKey).trim().toLowerCase();
+        keys.add(`name:${normalizedKey}`);
+        keys.add(outcome.assigneeKey);
+      }
+
+      if (keys.size === 0) {
+        keys.add(`idx:${index.size}`);
+      }
+
+      keys.forEach(key => {
+        index.set(key, outcome);
+      });
+    });
+
+    return index;
+  }
+
+  resolveCompletionOutcomeForAssignee(assignee, index) {
+    if (!assignee || !(index instanceof Map)) {
+      return null;
+    }
+
+    const candidates = [];
+    const participantKey = this.buildParticipantKey(assignee);
+
+    if (participantKey) {
+      candidates.push(participantKey);
+    }
+
+    if (assignee.id) {
+      candidates.push(`id:${assignee.id}`);
+    }
+
+    if (assignee.externalId) {
+      candidates.push(`id:${assignee.externalId}`);
+    }
+
+    if (assignee.email) {
+      candidates.push(`email:${assignee.email.toLowerCase()}`);
+    }
+
+    if (assignee.name) {
+      candidates.push(`name:${assignee.name.trim().toLowerCase()}`);
+    }
+
+    if (assignee.username) {
+      candidates.push(`name:${assignee.username.trim().toLowerCase()}`);
+    }
+
+    for (const key of candidates) {
+      if (index.has(key)) {
+        return index.get(key);
+      }
+    }
+
+    return null;
+  }
+
+  formatCompletionBreakdown(completionBreakdown = []) {
+    if (!Array.isArray(completionBreakdown) || completionBreakdown.length === 0) {
+      return '';
+    }
+
+    const lines = completionBreakdown.map(outcome => {
+      const assigneeName = outcome?.assignee?.name || outcome?.assigneeKey || 'عضو';
+      const points = outcome?.gamificationResult?.pointsEarned || 0;
+      const badgeCount = Array.isArray(outcome?.gamificationResult?.newBadges)
+        ? outcome.gamificationResult.newBadges.length
+        : 0;
+
+      let line = `• ${assigneeName}: ${points} نقطة`;
+
+      if (badgeCount > 0) {
+        line += ` + ${badgeCount} وسام`;
+      }
+
+      return line;
+    });
+
+    return lines.join('\n');
+  }
+
   async prepareAttachmentPreviews(attachments = []) {
     if (!Array.isArray(attachments) || attachments.length === 0) {
       return [];
@@ -1600,7 +1810,11 @@ class EnhancedNotificationService {
     }
 
     if (participant.name) {
-      return `name:${participant.name.toLowerCase()}`;
+      return `name:${participant.name.trim().toLowerCase()}`;
+    }
+
+    if (participant.username) {
+      return `name:${participant.username.trim().toLowerCase()}`;
     }
 
     return null;

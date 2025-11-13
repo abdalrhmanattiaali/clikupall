@@ -51,7 +51,7 @@ AI_PROVIDER=openai
 
 # إذا اخترت OpenAI (ChatGPT)
 OPENAI_API_KEY=sk-proj-YOUR_OPENAI_KEY_HERE
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=gpt-5
 
 # أو إذا اخترت Claude
 # ANTHROPIC_API_KEY=sk-ant-api03-YOUR_CLAUDE_KEY_HERE
@@ -314,7 +314,7 @@ kill -9 [PID]
 
 ✅ **خدمات الذكاء الاصطناعي**
 - Claude (Anthropic)
-- ChatGPT (OpenAI GPT-4o)
+- ChatGPT (OpenAI GPT-5)
 - Google Gemini
 
 ✅ **خدمة WhatsApp**

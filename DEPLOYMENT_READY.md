@@ -41,7 +41,7 @@ clikupall/
 ### 🤖 الذكاء الاصطناعي (Multi-Provider)
 ✅ **3 مزودين AI:**
 - Claude (Anthropic) - claude-3-5-sonnet
-- ChatGPT (OpenAI) - GPT-4o
+- ChatGPT (OpenAI) - GPT-5
 - Google Gemini - gemini-2.5-flash
 
 ✅ **اختيار المزود من .env:**

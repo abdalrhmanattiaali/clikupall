@@ -403,6 +403,16 @@ export const CHALLENGE_BADGES = [
     requirement: { type: 'diverse_categories', value: 5 },
     points: 150,
     rarity: 'uncommon'
+  },
+  {
+    id: 'daily_champion',
+    name: '🏅 وسام بطل اليوم',
+    nameEn: 'Daily Champion',
+    description: 'أعلى عضو إنجازاً في اليوم (يُمنح آلياً)',
+    category: BADGE_CATEGORIES.CHALLENGES,
+    requirement: { type: 'manual_award', value: 'daily_champion' },
+    points: 120,
+    rarity: 'rare'
   }
 ];
 

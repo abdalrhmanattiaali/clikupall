@@ -369,7 +369,7 @@ echo ".env" >> .gitignore
 
 ### 2. Monitor Costs
 ChatGPT API has costs:
-- GPT-4o: ~$0.005 per message
+- GPT-5: راجع أحدث تسعير من OpenAI (أغلى من 4o)
 - 4 messages/day × 30 days = 120 messages/month
 - ~$0.60/month (very affordable!)
 

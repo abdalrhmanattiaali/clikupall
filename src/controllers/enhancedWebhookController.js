@@ -11,7 +11,8 @@ import taskWeightingService from '../services/ai/taskWeightingService.js';
 import gamificationService from '../services/gamification/gamificationService.js';
 import databaseService from '../database/index.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
-import { isNonOpenStatus, isCancellationStatus } from '../config/constants.js';
+import { isNonOpenStatus, isCancellationStatus, TASK_CATEGORIES } from '../config/constants.js';
+import productivityRepo from '../repositories/productivityRepository.js';
 
 // Event trigger types mapping
 const TRIGGER_TYPES = {
@@ -137,6 +138,135 @@ function extractStatusInfo(...sources) {
   }
 
   return null;
+}
+
+function analyzeTaskCategory(task) {
+  const text = `${task?.name || ''} ${task?.description || ''}`.toLowerCase();
+  const detected = [];
+
+  Object.entries(TASK_CATEGORIES || {}).forEach(([category, keywords]) => {
+    if (Array.isArray(keywords) && keywords.some(keyword => text.includes(keyword))) {
+      detected.push(category);
+    }
+  });
+
+  return detected.length > 0 ? detected : ['عام'];
+}
+
+function buildAssigneeStatKey(assignee) {
+  if (!assignee) {
+    return 'عضو غير معروف';
+  }
+
+  return assignee.name
+    || assignee.username
+    || assignee.email
+    || (assignee.id ? `عضو ${assignee.id}` : 'عضو غير معروف');
+}
+
+async function recordCompletionForAssignee(task, assignee, actionedBy) {
+  const statKey = buildAssigneeStatKey(assignee);
+  const categories = analyzeTaskCategory(task);
+  let productivityEntry = null;
+  let gamificationResult = null;
+
+  try {
+    productivityEntry = await productivityRepo.addEntry({
+      type: 'task_completed',
+      taskId: task.id,
+      userId: statKey,
+      timestamp: Date.now(),
+      isSubtask: !!task.parent,
+      parentId: task.parent || null,
+      categories,
+      taskName: task.name,
+      taskDescription: task.description || '',
+      completedBy: actionedBy
+    });
+  } catch (error) {
+    logger.error('Failed to record productivity entry for completion', {
+      taskId: task?.id,
+      assignee: statKey,
+      error: error.message
+    });
+  }
+
+  const numericId = assignee?.id !== null && assignee?.id !== undefined
+    ? Number(assignee.id)
+    : NaN;
+
+  if (Number.isFinite(numericId)) {
+    try {
+      gamificationResult = await gamificationService.processCompletedTask(task, numericId);
+    } catch (error) {
+      logger.error('Gamification processing failed for assignee', {
+        taskId: task?.id,
+        assigneeId: numericId,
+        error: error.message
+      });
+    }
+  } else {
+    logger.warn('Unable to credit gamification - missing numeric assignee id', {
+      taskId: task?.id,
+      assignee: statKey
+    });
+  }
+
+  return {
+    assignee,
+    assigneeKey: statKey,
+    gamificationResult,
+    productivityEntry
+  };
+}
+
+function aggregateCompletionGamification(outcomes = []) {
+  if (!Array.isArray(outcomes) || outcomes.length === 0) {
+    return { summary: null };
+  }
+
+  let totalPoints = 0;
+  const combinedBadges = [];
+  let firstUpgrade = null;
+
+  const breakdown = outcomes.map(outcome => {
+    const points = outcome?.gamificationResult?.pointsEarned || 0;
+    totalPoints += points;
+
+    const badges = Array.isArray(outcome?.gamificationResult?.newBadges)
+      ? outcome.gamificationResult.newBadges.map(badge => ({
+        ...badge,
+        awardedTo: outcome.assignee?.name || outcome.assigneeKey
+      }))
+      : [];
+
+    combinedBadges.push(...badges);
+
+    if (!firstUpgrade && outcome?.gamificationResult?.shieldUpgrade) {
+      firstUpgrade = {
+        ...outcome.gamificationResult.shieldUpgrade,
+        awardedTo: outcome.assignee?.name || outcome.assigneeKey
+      };
+    }
+
+    return {
+      assignee: outcome.assignee,
+      assigneeKey: outcome.assigneeKey,
+      points,
+      badges,
+      shieldUpgrade: outcome?.gamificationResult?.shieldUpgrade || null
+    };
+  });
+
+  const summary = {
+    pointsEarned: totalPoints,
+    totalPoints,
+    newBadges: combinedBadges,
+    shieldUpgrade: firstUpgrade,
+    breakdown
+  };
+
+  return { summary };
 }
 
 async function lookupPreviousStatusFromEvents(taskId) {
@@ -927,35 +1057,35 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
   const completionTarget = assignees[0] || null;
 
   if (isComplete && !isCancelled) {
-    let gamificationResult = null;
-    const completionMemberId = completionTarget?.id;
-    const numericCompletionId = completionMemberId !== null && completionMemberId !== undefined
-      ? Number(completionMemberId)
-      : NaN;
+    const completionOutcomes = [];
 
-    if (Number.isFinite(numericCompletionId)) {
-      try {
-        gamificationResult = await gamificationService.processCompletedTask(task, numericCompletionId);
-      } catch (error) {
-        logger.error('Gamification failed', { error: error.message });
+    if (assignees.length === 0 && completionTarget) {
+      const syntheticOutcome = await recordCompletionForAssignee(task, completionTarget, actionedBy);
+      if (syntheticOutcome) {
+        completionOutcomes.push(syntheticOutcome);
       }
     } else {
-      logger.warn('Unable to locate team member for completion credit', {
-        taskId: task.id,
-        assignees: assignees.map(a => a.name)
-      });
+      for (const assignee of assignees) {
+        const outcome = await recordCompletionForAssignee(task, assignee, actionedBy);
+        if (outcome) {
+          completionOutcomes.push(outcome);
+        }
+      }
     }
+
+    const aggregated = aggregateCompletionGamification(completionOutcomes).summary;
 
     eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
       task,
       actionedBy,
       userName: actionedBy,
       assignees,
-      gamificationResult,
+      gamificationResult: aggregated,
       beforeStatus,
       afterStatus,
       completionTargetId: completionTarget?.id || null,
       completionTargetName: completionTarget?.name || null,
+      completionOutcomes,
       creator
     });
 
@@ -964,9 +1094,9 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       from: beforeStatus,
       to: afterStatus,
       aiWeight: task.ai_weight || 10,
-      points: gamificationResult?.pointsEarned,
+      points: aggregated?.pointsEarned,
       actionedBy,
-      creditedTo: completionTarget?.name || 'غير محدد',
+      creditedTo: assignees.length > 0 ? assignees.map(a => a.name).join(', ') : (completionTarget?.name || 'غير محدد'),
       creator: creator?.name || creator?.username || null
     });
   } else {

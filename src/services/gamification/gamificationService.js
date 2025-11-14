@@ -3,7 +3,7 @@
  * خدمة التلعيب الرئيسية - الأوسمة والدروع والنقاط
  *
  * Features:
- * - Badge tracking (50+ badges)
+ * - Badge tracking (40+ badges)
  * - Shield system (10 levels)
  * - Points with multipliers
  * - Streak tracking

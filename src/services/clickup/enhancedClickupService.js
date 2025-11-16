@@ -71,6 +71,10 @@ class EnhancedClickUpService {
       name: task.name || '',
       description: task.description || task.text_content || null,
       url: task.url || null,
+      parent: task.parent || null,
+      parent_id: task.parent || null,
+      parent_name: task.parent?.name || task.parent_name || null,
+      parent_url: task.parent ? `https://app.clickup.com/t/${task.parent}` : null,
 
       // Status
       status_name: task.status?.status || task.status?.type || null,

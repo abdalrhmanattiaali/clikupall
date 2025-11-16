@@ -1043,6 +1043,11 @@ class EnhancedNotificationService {
       message += `*الموعد النهائي:* بعد ${daysUntil} يوم\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task, { bulletPrefix: '* ' });
+    if (parentBlock) {
+      message += parentBlock;
+    }
+
     message += `\n🔗 ${task.url}`;
 
     return message;
@@ -1088,6 +1093,11 @@ class EnhancedNotificationService {
       } else {
         message += `• الموعد النهائي: بعد ${daysUntil} ${daysUntil === 1 ? 'يوم' : 'أيام'}\n`;
       }
+    }
+
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += parentBlock;
     }
 
     message += `\n🔗 ${task.url}\n\n`;
@@ -2021,31 +2031,70 @@ class EnhancedNotificationService {
     // New tasks
     if (byType.task_created.length > 0) {
       finalMessage += `📝 *مهام جديدة (${byType.task_created.length}):*\n\n`;
-      byType.task_created.forEach((item, i) => {
-        if (i < 5) {
-          const assignees = item.data?.assignees || [];
-          const weight = item.task.ai_weight || 10;
-          const priority = item.task.priority_label || 'عادية';
-          const complexity = item.task.ai_complexity || 'medium';
-          const complexityAr = this.translateComplexity(complexity);
-          const createdBy = item.data?.createdBy || 'غير معروف';
 
-          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+      const groupedCreated = this.groupEntriesByParent(byType.task_created);
+      let createdEntryCount = 0;
+      let displayedCreatedTasks = 0;
 
-          if (assignees.length > 0) {
-            const names = assignees.map(a => a.name).join('، ');
-            finalMessage += `     👥 المكلفون: ${names}\n`;
-          } else {
-            finalMessage += `     👥 غير مسندة\n`;
+      for (const entry of groupedCreated) {
+        if (createdEntryCount >= 5) {
+          break;
+        }
+
+        createdEntryCount += 1;
+
+        if (entry.type === 'parent-group') {
+          const parentName = entry.parentName || 'مهمة رئيسية';
+          finalMessage += `  ${createdEntryCount}️⃣ *${parentName}* (تضم ${entry.subtasks.length} مهمة فرعية)\n`;
+
+          if (entry.parentUrl) {
+            finalMessage += `     🔗 ${entry.parentUrl}\n`;
           }
 
-          finalMessage += `     🧑‍💼 أنشأها: ${createdBy}\n`;
+          entry.subtasks.forEach((subItem) => {
+            finalMessage += this.formatGroupedSubtaskLine(subItem);
+          });
 
-          finalMessage += `     🔸 ${priority} • 💎 ${weight} نقطة • ${complexityAr}\n\n`;
+          finalMessage += `\n`;
+          displayedCreatedTasks += entry.subtasks.length;
+          continue;
         }
-      });
-      if (byType.task_created.length > 5) {
-        finalMessage += `     ✨ ... و ${byType.task_created.length - 5} مهمة أخرى\n\n`;
+
+        if (!entry.item) {
+          continue;
+        }
+
+        const item = entry.item;
+        const assignees = item.data?.assignees || [];
+        const weight = item.task.ai_weight || 10;
+        const priority = item.task.priority_label || 'عادية';
+        const complexity = item.task.ai_complexity || 'medium';
+        const complexityAr = this.translateComplexity(complexity);
+        const createdBy = item.data?.createdBy || 'غير معروف';
+
+        finalMessage += `  ${createdEntryCount}️⃣ *${item.task.name}*\n`;
+
+        if (assignees.length > 0) {
+          const names = assignees.map(a => a.name).join('، ');
+          finalMessage += `     👥 المكلفون: ${names}\n`;
+        } else {
+          finalMessage += `     👥 غير مسندة\n`;
+        }
+
+        finalMessage += `     🧑‍💼 أنشأها: ${createdBy}\n`;
+        finalMessage += `     🔸 ${priority} • 💎 ${weight} نقطة • ${complexityAr}\n`;
+
+        if (this.hasParentContext(item.task)) {
+          finalMessage += `     ↪️ ${this.buildParentInlineContext(item.task)}\n`;
+        }
+
+        finalMessage += `\n`;
+        displayedCreatedTasks += 1;
+      }
+
+      const remainingCreated = byType.task_created.length - displayedCreatedTasks;
+      if (remainingCreated > 0) {
+        finalMessage += `     ✨ ... و ${remainingCreated} مهمة أخرى\n\n`;
       }
     }
 
@@ -2065,7 +2114,13 @@ class EnhancedNotificationService {
             finalMessage += `     👥 تم تكليف: ${names}\n`;
           }
 
-          finalMessage += `     📌 بواسطة: ${assignedBy} • 💎 ${weight} نقطة\n\n`;
+          finalMessage += `     📌 بواسطة: ${assignedBy} • 💎 ${weight} نقطة\n`;
+
+          if (this.hasParentContext(item.task)) {
+            finalMessage += `     ↪️ ${this.buildParentInlineContext(item.task)}\n`;
+          }
+
+          finalMessage += `\n`;
         }
       });
       if (byType.task_assigned.length > 5) {
@@ -2218,6 +2273,140 @@ class EnhancedNotificationService {
       'very_complex': 'معقدة جداً'
     };
     return translations[complexity] || 'متوسطة';
+  }
+
+  hasParentContext(task) {
+    return Boolean(this.getParentId(task));
+  }
+
+  getParentId(task) {
+    if (!task) {
+      return null;
+    }
+    return task.parent_id || task.parentId || task.parent || null;
+  }
+
+  getParentName(task) {
+    const parentId = this.getParentId(task);
+    if (!parentId || !task) {
+      return null;
+    }
+
+    return task.parent_name
+      || task.parentName
+      || task.parent_task?.name
+      || task.parentTask?.name
+      || `المهمة الرئيسية (${parentId})`;
+  }
+
+  getParentUrl(task) {
+    const parentId = this.getParentId(task);
+    if (!parentId || !task) {
+      return null;
+    }
+
+    return task.parent_url
+      || task.parentUrl
+      || task.parent_task?.url
+      || task.parentTask?.url
+      || `https://app.clickup.com/t/${parentId}`;
+  }
+
+  buildParentInlineContext(task) {
+    if (!this.hasParentContext(task)) {
+      return '';
+    }
+
+    const parentName = this.getParentName(task);
+    return `تابعة لـ ${parentName}`;
+  }
+
+  buildParentDetailBlock(task, options = {}) {
+    if (!this.hasParentContext(task)) {
+      return '';
+    }
+
+    const { bulletPrefix = '• ' } = options;
+    const parentName = this.getParentName(task);
+    const parentUrl = this.getParentUrl(task);
+
+    let block = `${bulletPrefix}المهمة تابعة لـ: ${parentName}\n`;
+    if (parentUrl) {
+      block += `${bulletPrefix}رابط المهمة الرئيسية: ${parentUrl}\n`;
+    }
+    return block;
+  }
+
+  groupEntriesByParent(items = []) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return [];
+    }
+
+    const parentGroups = new Map();
+    const orderedEntries = [];
+
+    for (const entry of items) {
+      const parentId = this.getParentId(entry.task);
+      if (!parentId) {
+        orderedEntries.push({ type: 'single', item: entry });
+        continue;
+      }
+
+      let group = parentGroups.get(parentId);
+      if (!group) {
+        group = {
+          parentId,
+          parentName: this.getParentName(entry.task),
+          parentUrl: this.getParentUrl(entry.task),
+          entries: []
+        };
+        parentGroups.set(parentId, group);
+        orderedEntries.push(group);
+      }
+
+      group.entries.push(entry);
+    }
+
+    return orderedEntries.map((entry) => {
+      if (entry.entries) {
+        if (entry.entries.length > 1) {
+          return {
+            type: 'parent-group',
+            parentId: entry.parentId,
+            parentName: entry.parentName,
+            parentUrl: entry.parentUrl,
+            subtasks: entry.entries
+          };
+        }
+
+        return {
+          type: 'single',
+          item: entry.entries[0]
+        };
+      }
+
+      return entry;
+    });
+  }
+
+  formatGroupedSubtaskLine(item) {
+    if (!item || !item.task) {
+      return '';
+    }
+
+    const assignees = Array.isArray(item.data?.assignees) ? item.data.assignees : [];
+    const assigneeNames = assignees.length > 0
+      ? assignees.map(a => a.name).join('، ')
+      : 'غير محدد';
+    const createdBy = item.data?.createdBy || 'غير معروف';
+    const priority = item.task.priority_label || 'عادية';
+    const weight = item.task.ai_weight || 10;
+    const complexity = this.translateComplexity(item.task.ai_complexity || 'medium');
+
+    let line = `        • ${item.task.name}\n`;
+    line += `          👥 ${assigneeNames} • 🧑‍💼 ${createdBy}\n`;
+    line += `          🔸 ${priority} • 💎 ${weight} نقطة • ${complexity}\n`;
+    return line;
   }
 
   /**

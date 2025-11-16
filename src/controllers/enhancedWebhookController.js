@@ -92,6 +92,66 @@ async function loadPreviousTaskState(taskId) {
   return null;
 }
 
+async function enrichTaskWithParentDetails(task) {
+  if (!task) {
+    return task;
+  }
+
+  const parentId = task.parent || task.parent_id || task.parentId || null;
+
+  if (!parentId) {
+    task.parent = null;
+    return task;
+  }
+
+  task.parent = parentId;
+
+  const hasName = Boolean(task.parent_name || task.parentName);
+  const hasUrl = Boolean(task.parent_url || task.parentUrl);
+
+  if (hasName && hasUrl) {
+    return task;
+  }
+
+  let parentTask = await loadPreviousTaskState(parentId);
+
+  if (!parentTask) {
+    try {
+      parentTask = await enhancedClickUpService.fetchCompleteTaskData(parentId);
+    } catch (error) {
+      logger.warn('Failed to fetch parent task details', {
+        parentId,
+        error: error.message
+      });
+    }
+  }
+
+  if (parentTask) {
+    task.parent_name = parentTask.name
+      || parentTask.title
+      || parentTask.text_content
+      || parentTask.description
+      || task.parent_name
+      || null;
+    task.parent_url = parentTask.url
+      || task.parent_url
+      || (parentId ? `https://app.clickup.com/t/${parentId}` : null);
+    task.parent_status_name = parentTask.status_name
+      || parentTask.status?.status
+      || task.parent_status_name
+      || null;
+    task.parent_priority_label = parentTask.priority_label
+      || parentTask.priority?.priority
+      || task.parent_priority_label
+      || null;
+  } else {
+    task.parent_name = task.parent_name || `المهمة الرئيسية (${parentId})`;
+    task.parent_url = task.parent_url || (parentId ? `https://app.clickup.com/t/${parentId}` : null);
+  }
+
+  return task;
+}
+
 function tryParseJson(value) {
   if (!value || typeof value !== 'string') {
     return value;
@@ -478,6 +538,8 @@ async function processWebhook(req, res, options = {}) {
     if (!task.ai_weight) {
       await taskWeightingService.calculateTaskWeight(task);
     }
+
+    await enrichTaskWithParentDetails(task);
 
     const historyItem = body.history_items?.[0];
     let assigneeChange = extractAssigneeChanges(historyItem);

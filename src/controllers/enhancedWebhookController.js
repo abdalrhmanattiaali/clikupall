@@ -1435,8 +1435,8 @@ async function handleAllSubtasksResolved(task, changedBy) {
  * Handle comment posted
  */
 async function handleCommentPosted(task, body, changedBy) {
-  const commentText = extractCommentText(body);
-  const attachments = gatherCommentAttachments(
+  let commentText = extractCommentText(body);
+  let attachments = gatherCommentAttachments(
     body.comment,
     body.payload?.comment,
     body.history_items?.[0]?.comment,
@@ -1444,6 +1444,34 @@ async function handleCommentPosted(task, body, changedBy) {
     body.history_items?.[0]?.value,
     body.attachments
   );
+
+  const commentId = extractCommentId(body);
+
+  if (commentId && (!commentText || attachments.length === 0)) {
+    try {
+      logger.info('Fetching comment details from ClickUp API', { commentId, taskId: task.id });
+      const commentDetails = await enhancedClickUpService.fetchCommentDetails(commentId);
+
+      if (commentDetails) {
+        if (!commentText && commentDetails.text) {
+          commentText = sanitizeCommentText(commentDetails.text);
+        }
+
+        if (Array.isArray(commentDetails.attachments) && commentDetails.attachments.length > 0) {
+          attachments = gatherCommentAttachments(
+            attachments,
+            commentDetails.attachments
+          );
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to load comment details from API', {
+        commentId,
+        taskId: task.id,
+        error: error.message
+      });
+    }
+  }
 
   const assignees = getAssigneesWithInfo(task);
   const creator = getTaskCreatorInfo(task);
@@ -1463,6 +1491,7 @@ async function handleCommentPosted(task, body, changedBy) {
 
   logger.success('Comment posted event emitted', {
     taskId: task.id,
+    commentId: commentId || 'unknown',
     textLength: commentText.length,
     attachmentCount: attachments.length
   });
@@ -1505,6 +1534,52 @@ function extractCommentText(body = {}) {
   }
 
   return '';
+}
+
+function extractCommentId(body = {}) {
+  const candidates = [
+    body.comment?.id,
+    body.comment?.comment_id,
+    body.payload?.comment?.id,
+    body.payload?.comment?.comment_id,
+    body.payload?.comment_id,
+    body.comment_id,
+    body.id,
+    body.history_items?.[0]?.comment_id,
+    body.history_items?.[0]?.comment?.id,
+    body.history_items?.[0]?.comment?.comment_id,
+    body.history_items?.[0]?.value?.comment_id,
+    body.history_items?.[0]?.value?.comment?.id,
+    body.history_items?.[0]?.value?.after?.comment?.id,
+    body.history_items?.[0]?.value?.after?.comment_id,
+    body.history_items?.[0]?.value?.comment?.comment_id
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeIdCandidate(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function normalizeIdCandidate(candidate) {
+  if (!candidate) {
+    return null;
+  }
+
+  if (typeof candidate === 'string' || typeof candidate === 'number') {
+    const value = candidate.toString().trim();
+    return value || null;
+  }
+
+  if (typeof candidate === 'object') {
+    return normalizeIdCandidate(candidate.id || candidate.comment_id || candidate.value);
+  }
+
+  return null;
 }
 
 function extractTextCandidate(candidate) {

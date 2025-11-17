@@ -1870,11 +1870,11 @@ class EnhancedNotificationService {
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
 
     if (hasText && hasAttachments) {
-      return 'نص + مرفقات';
+      return 'تعليق نصي + مرفقات';
     }
 
     if (hasText) {
-      return 'نص فقط';
+      return 'تعليق نصي';
     }
 
     if (hasAttachments) {

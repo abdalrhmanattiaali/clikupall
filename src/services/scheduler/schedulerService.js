@@ -200,7 +200,7 @@ class SchedulerService {
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const systemPrompt = `أنت مساعد تحفيزي صباحي. اكتب رسالة صباحية قصيرة (3-4 جمل) تحفيزية وإيجابية بالعربية.`;
 
@@ -252,7 +252,7 @@ class SchedulerService {
 
       try {
         const allTasks = await clickupService.getAllTasksForMember(member.id);
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const openTasks = allTasks.filter(t =>
           !isNonOpenStatus(t.status?.status, t.status?.type)
@@ -360,7 +360,7 @@ class SchedulerService {
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
         const allTasks = await clickupService.getAllTasksForMember(member.id);
 
         const openTasks = allTasks.filter(t =>
@@ -445,7 +445,7 @@ ${aiMessage}`;
       let badgeNames = [];
 
       try {
-        stats = await productivityRepo.getUserStats(member.name);
+        stats = await productivityRepo.getUserStats(member);
       } catch (error) {
         logger.error('Failed to read productivity stats for member', {
           member: member.name,
@@ -644,22 +644,39 @@ ${aiMessage}`;
     logger.info('Sending AI goodnight message');
 
     try {
-      const allStats = await productivityRepo.getAllUsersStats();
+      const memberStats = [];
 
-      let totalToday = 0;
-      let bestPerformer = { name: null, count: -1 };
-
-      for (const [userName, stats] of Object.entries(allStats)) {
-        totalToday += stats.today;
-
-        if (stats.today > bestPerformer.count) {
-          bestPerformer = { name: userName, count: stats.today };
+      for (const member of TEAM) {
+        try {
+          const stats = await productivityRepo.getUserStats(member);
+          memberStats.push({ member, stats });
+        } catch (error) {
+          logger.error('Failed to read stats for goodnight summary', {
+            member: member.name,
+            error: error.message
+          });
+          memberStats.push({ member, stats: { today: 0 } });
         }
       }
 
+      let totalToday = 0;
+      let bestPerformer = { member: null, count: -1 };
+
+      memberStats.forEach(({ member, stats }) => {
+        const completedToday = stats?.today || 0;
+        totalToday += completedToday;
+
+        if (completedToday > bestPerformer.count) {
+          bestPerformer = { member, count: completedToday };
+        }
+      });
+
+      const bestName = bestPerformer.member ? `@${bestPerformer.member.name}` : 'غير محدد';
+      const bestCount = Math.max(bestPerformer.count, 0);
+
       const systemPrompt = `أنت مساعد تحفيزي. اكتب رسالة قصيرة (2-3 جمل) لنهاية اليوم بطريقة دافئة ومحفزة.`;
 
-      const userMessage = `إجمالي المهام المنجزة اليوم: ${totalToday}\nأفضل أداء: @${bestPerformer.name} (${bestPerformer.count} مهام)\n\nاكتب رسالة تصبح على خير محفزة.`;
+      const userMessage = `إجمالي المهام المنجزة اليوم: ${totalToday}\nأفضل أداء: ${bestName} (${bestCount} مهام)\n\nاكتب رسالة تصبح على خير محفزة.`;
 
       const aiMessage = await aiService.generateCompletion(
         systemPrompt,
@@ -697,7 +714,7 @@ ${aiMessage}`;
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const systemPrompt = `أنت مساعد تحليلي أسبوعي. اكتب ملخصاً قصيراً (4-5 جمل) عن الأسبوع مع نصائح للأسبوع القادم.`;
 

@@ -227,6 +227,28 @@ function buildAssigneeStatKey(assignee) {
 async function recordCompletionForAssignee(task, assignee, actionedBy) {
   const statKey = buildAssigneeStatKey(assignee);
   const categories = analyzeTaskCategory(task);
+  const aliasSet = new Set();
+
+  const addAlias = (value) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+
+    const normalized = String(value).trim();
+    if (normalized) {
+      aliasSet.add(normalized);
+    }
+  };
+
+  addAlias(statKey);
+  addAlias(assignee?.name);
+  addAlias(assignee?.username);
+  addAlias(assignee?.email);
+  if (assignee?.id !== undefined && assignee?.id !== null) {
+    addAlias(String(assignee.id));
+  }
+
+  const userAliases = Array.from(aliasSet.values());
   let productivityEntry = null;
   let gamificationResult = null;
 
@@ -235,6 +257,7 @@ async function recordCompletionForAssignee(task, assignee, actionedBy) {
       type: 'task_completed',
       taskId: task.id,
       userId: statKey,
+      userAliases,
       timestamp: Date.now(),
       isSubtask: !!task.parent,
       parentId: task.parent || null,

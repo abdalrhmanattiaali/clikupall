@@ -991,14 +991,21 @@ class EnhancedNotificationService {
     const participantNames = Array.isArray(participants) && participants.length > 0
       ? participants.map(p => p.name).join('، ')
       : 'غير محدد';
+    const contentHint = this.describeCommentContent(commentText, attachments);
+    const trimmedText = commentText && commentText.trim() ? commentText.trim() : '';
 
     let message = `💬 *تعليق جديد على مهمة*\n\n`;
     message += `*المهمة:* ${taskLabel}\n`;
     message += `*بواسطة:* ${userName}\n`;
     message += `*المعنيون:* ${participantNames}\n`;
+    message += `*نوع المحتوى:* ${contentHint}\n`;
 
-    if (commentText) {
-      message += `\n"${this.truncateText(commentText, 220)}"\n`;
+    if (trimmedText) {
+      message += `\n"${this.truncateText(trimmedText, 220)}"\n`;
+    } else if (attachments && attachments.length > 0) {
+      message += `\n_(لا يوجد نص مباشر، تم إرسال مرفقات فقط)_\n`;
+    } else {
+      message += `\n_(لم يُكتب نص في هذا التعليق)_\n`;
     }
 
     if (attachments && attachments.length > 0) {
@@ -1034,6 +1041,8 @@ class EnhancedNotificationService {
     const recipientKey = this.buildParticipantKey(recipient);
     const actorKey = this.buildParticipantKey(actor);
     const isActor = recipientKey && actorKey && recipientKey === actorKey;
+    const contentHint = this.describeCommentContent(commentText, attachments);
+    const trimmedText = commentText && commentText.trim() ? commentText.trim() : '';
 
     let message = isActor
       ? `📝 *تم تسجيل تعليقك على المهمة*\n\n`
@@ -1042,9 +1051,14 @@ class EnhancedNotificationService {
     message += `*المهمة:* ${taskLabel}\n`;
     message += `*من:* ${isActor ? 'أنت' : userName}\n`;
     message += `*إلى:* ${recipient.name}\n`;
+    message += `*نوع المحتوى:* ${contentHint}\n`;
 
-    if (commentText) {
-      message += `\n${this.truncateText(commentText, 220)}\n`;
+    if (trimmedText) {
+      message += `\n${this.truncateText(trimmedText, 220)}\n`;
+    } else if (attachments && attachments.length > 0) {
+      message += `\n_(لا يوجد نص مباشر، راجع المرفقات)_\n`;
+    } else {
+      message += `\n_(لم يُكتب نص في هذا التعليق)_\n`;
     }
 
     if (attachments && attachments.length > 0) {
@@ -1849,6 +1863,77 @@ class EnhancedNotificationService {
     });
 
     return lines.join('\n');
+  }
+
+  describeCommentContent(commentText, attachments = []) {
+    const hasText = Boolean(commentText && commentText.trim());
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+
+    if (hasText && hasAttachments) {
+      return 'نص + مرفقات';
+    }
+
+    if (hasText) {
+      return 'نص فقط';
+    }
+
+    if (hasAttachments) {
+      return 'مرفقات فقط';
+    }
+
+    return 'بدون تفاصيل مذكورة';
+  }
+
+  buildAttachmentTemplateBlock(attachments = []) {
+    if (!Array.isArray(attachments) || attachments.length === 0) {
+      return 'بدون مرفقات';
+    }
+
+    const names = attachments
+      .filter(Boolean)
+      .map((attachment, index) => attachment.name || `ملف ${index + 1}`);
+
+    if (names.length === 0) {
+      return '📎 مرفقات: روابط متاحة';
+    }
+
+    const preview = names.slice(0, 4).join(', ');
+    const extraCount = names.length - 4;
+    const extraLabel = extraCount > 0 ? ` (+${extraCount} إضافية)` : '';
+
+    return `📎 مرفقات (${names.length}): ${preview}${extraLabel}`;
+  }
+
+  buildCommentNotificationReason(recipient) {
+    if (!recipient) {
+      return 'أنت مرتبط بهذه المهمة كمشارك أساسي';
+    }
+
+    if (recipient.reason) {
+      return recipient.reason;
+    }
+
+    if (recipient.role) {
+      return `لأنك ${recipient.role} في هذه المهمة`;
+    }
+
+    return 'لأنك مكلف أو منشئ أو متابع لهذه المهمة';
+  }
+
+  buildCommentRoleHint(recipient) {
+    if (!recipient) {
+      return 'إشعار تلقائي لكل المشاركين النشطين.';
+    }
+
+    if (recipient.role) {
+      return `دورك الحالي: ${recipient.role}.`;
+    }
+
+    if (recipient.name) {
+      return `${recipient.name} ضمن قائمة المشاركين في المهمة.`;
+    }
+
+    return 'إشعار تلقائي لكل المشاركين النشطين.';
   }
 
   truncateText(text, limit = 200) {
@@ -2836,6 +2921,53 @@ class EnhancedNotificationService {
 - استخدم البيانات لتوليد {impact} و{next_step} في جملة أو جملتين
 - إذا لم تتوفر قيمة ما فاستخدم عبارة "غير محدد"
 - تأكد من إبراز اسم الفاعل والمكلفين`
+      ,
+      comment_group: `أنت مساعد إشعارات. اكتب رسالة جماعية واضحة عند إضافة تعليق على مهمة.
+
+**القالب (التزم به تماماً):**
+💬 تعليق جديد على مهمة
+
+• المهمة: {task_name}
+• بواسطة: {user_name}
+• المعنيون: {participant_names}
+• نوع المحتوى: {content_hint}
+
+🗒️ التفاصيل:
+{comment_preview}
+
+{attachments_block}
+
+🔗 {url}
+
+**التعليمات:**
+- إذا لم يوجد نص فليكن {comment_preview} = "لا يوجد نص مباشر، راجع المرفقات"
+- إذا لم توجد مرفقات فليكن {attachments_block} = "بدون مرفقات"
+- التزم تماماً بالهيكل والرموز`
+      ,
+      comment_dm: `أنت مساعد إشعارات. أرسل رسالة خاصة توضح التعليق وما يخص المستلم.
+
+**القالب (التزم به تماماً):**
+💬 تعليق يهمك
+
+• المهمة: {task_name}
+• من: {user_name}
+• إليك: {recipient_name}
+• سبب الإشعار: {reason}
+• نوع المحتوى: {content_hint}
+
+🗒️ التفاصيل:
+{comment_preview}
+
+{attachments_block}
+
+📎 ملاحظة: {role_hint}
+🔗 {url}
+
+**التعليمات:**
+- اجعل {reason} جملة قصيرة واضحة
+- إذا لم يوجد نص فليكن {comment_preview} = "لا يوجد نص مباشر"
+- إذا لم توجد مرفقات فليكن {attachments_block} = "بدون مرفقات"
+- لا تغيّر القالب أو الرموز`
     };
 
     return templates[templateType] || templates.assignment_dm;
@@ -2857,7 +2989,12 @@ class EnhancedNotificationService {
       actionedBy,
       assignedBy,
       transitionType,
-      creator
+      creator,
+      participants = [],
+      attachments = [],
+      commentText = '',
+      recipient = null,
+      actor = null
     } = data;
     let msg = '**البيانات:**\n\n';
 
@@ -3052,6 +3189,49 @@ class EnhancedNotificationService {
           msg += `next_step: ${this.buildCreatorNextStep(task, transitionType || 'progress', assignees, actionedBy, creator)}\n`;
           msg += `url: ${task.url}\n`;
         }
+
+        break;
+      }
+
+      case 'comment_group': {
+        const participantNames = participants.length
+          ? participants.map(p => p.name || 'عضو').join(', ')
+          : 'غير محدد';
+        const contentHint = this.describeCommentContent(commentText, attachments);
+        const trimmedText = commentText && commentText.trim() ? commentText.trim() : '';
+        const preview = trimmedText
+          ? this.truncateText(trimmedText, 220)
+          : (attachments.length ? 'لا يوجد نص مباشر، راجع المرفقات' : 'لا يوجد نص مباشر');
+
+        msg += `task_name: ${task?.name || 'مهمة'}\n`;
+        msg += `user_name: ${userName || actor?.name || 'غير معروف'}\n`;
+        msg += `participant_names: ${participantNames}\n`;
+        msg += `content_hint: ${contentHint}\n`;
+        msg += `comment_preview: ${preview}\n`;
+        msg += `attachments_block: ${this.buildAttachmentTemplateBlock(attachments)}\n`;
+        msg += `url: ${task?.url || 'غير متوفر'}\n`;
+
+        break;
+      }
+
+      case 'comment_dm': {
+        const contentHint = this.describeCommentContent(commentText, attachments);
+        const trimmedText = commentText && commentText.trim() ? commentText.trim() : '';
+        const preview = trimmedText
+          ? this.truncateText(trimmedText, 220)
+          : (attachments.length ? 'لا يوجد نص مباشر، راجع المرفقات' : 'لا يوجد نص مباشر');
+        const reason = this.buildCommentNotificationReason(recipient);
+        const roleHint = this.buildCommentRoleHint(recipient);
+
+        msg += `task_name: ${task?.name || 'مهمة'}\n`;
+        msg += `user_name: ${userName || actor?.name || 'غير معروف'}\n`;
+        msg += `recipient_name: ${recipient?.name || 'عضو الفريق'}\n`;
+        msg += `reason: ${reason}\n`;
+        msg += `content_hint: ${contentHint}\n`;
+        msg += `comment_preview: ${preview}\n`;
+        msg += `attachments_block: ${this.buildAttachmentTemplateBlock(attachments)}\n`;
+        msg += `role_hint: ${roleHint}\n`;
+        msg += `url: ${task?.url || 'غير متوفر'}\n`;
 
         break;
       }

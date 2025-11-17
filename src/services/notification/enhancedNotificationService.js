@@ -320,8 +320,9 @@ class EnhancedNotificationService {
    */
   async handleTaskUnassigned(data) {
     const { task, assigneeName, unassignedBy } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
-    const message = `🔄 تم إلغاء تكليف *${assigneeName}* من مهمة "${task.name}"`;
+    const message = `🔄 تم إلغاء تكليف *${assigneeName}* من مهمة "${taskLabel}"`;
 
     this.addToQueue({
       type: 'task_unassigned',
@@ -412,6 +413,7 @@ class EnhancedNotificationService {
    */
   async handleTaskPriorityChanged(data) {
     const { task, beforePriority, afterPriority, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const priorityEmoji = {
       'urgent': '🔴',
@@ -423,7 +425,7 @@ class EnhancedNotificationService {
     const emoji = priorityEmoji[afterPriority.toLowerCase()] || '⚪';
 
     const message = `${emoji} *تغيير أولوية المهمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*من:* ${beforePriority}\n` +
       `*إلى:* ${afterPriority}\n` +
       `*بواسطة:* ${userName}`;
@@ -460,9 +462,10 @@ class EnhancedNotificationService {
    */
   async handleTaskTagAdded(data) {
     const { task, tag, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🏷️ *تم إضافة وسم*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*الوسم:* ${tag}\n` +
       `*بواسطة:* ${userName}`;
 
@@ -479,9 +482,10 @@ class EnhancedNotificationService {
    */
   async handleTaskTagRemoved(data) {
     const { task, tag, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🏷️ *تم إزالة وسم*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*الوسم:* ${tag}\n` +
       `*بواسطة:* ${userName}`;
 
@@ -498,13 +502,14 @@ class EnhancedNotificationService {
    */
   async handleTaskDueDateChanged(data) {
     const { task, beforeDate, afterDate, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const beforeStr = beforeDate ? new Date(parseInt(beforeDate)).toLocaleDateString('ar-EG') : 'بدون موعد';
     const afterStr = afterDate ? new Date(parseInt(afterDate)).toLocaleDateString('ar-EG') : 'بدون موعد';
     const daysUntil = afterDate ? Math.ceil((parseInt(afterDate) - Date.now()) / (1000 * 60 * 60 * 24)) : null;
 
     let message = `📅 *تم تغيير الموعد النهائي*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*من:* ${beforeStr}\n`;
     message += `*إلى:* ${afterStr}\n`;
 
@@ -535,11 +540,12 @@ class EnhancedNotificationService {
    */
   async handleTaskStartDateChanged(data) {
     const { task, startDate, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const dateStr = startDate ? new Date(parseInt(startDate)).toLocaleDateString('ar-EG') : 'بدون تاريخ';
 
     const message = `📅 *تم تغيير تاريخ البدء*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*تاريخ البدء:* ${dateStr}\n` +
       `*بواسطة:* ${userName}`;
 
@@ -556,9 +562,10 @@ class EnhancedNotificationService {
    */
   async handleTaskDueDateReminder(data) {
     const { task, assignees } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     let message = `⏰ *تذكير: الموعد النهائي اليوم!*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*الوزن:* ${task.ai_weight || 10} نقطة 💎\n`;
     message += `*الحالة:* ${task.status_name}\n`;
 
@@ -589,9 +596,10 @@ class EnhancedNotificationService {
    */
   async handleTaskStartDateReminder(data) {
     const { task } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🚀 *حان وقت البدء!*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*الوزن:* ${task.ai_weight || 10} نقطة 💎\n` +
       `\n🔗 ${task.url}\n` +
       `\nابدأ الآن! 💪`;
@@ -606,11 +614,12 @@ class EnhancedNotificationService {
    */
   async handleTaskTimeTracked(data) {
     const { task, timeMs, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const timeHours = timeMs ? (timeMs / (1000 * 60 * 60)).toFixed(1) : '0';
 
     const message = `⏱️ *تم تسجيل وقت*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*الوقت:* ${timeHours} ساعة\n` +
       `*بواسطة:* ${userName}`;
 
@@ -627,11 +636,12 @@ class EnhancedNotificationService {
    */
   async handleChecklistItemResolved(data) {
     const { task, resolved, total, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const progress = total > 0 ? Math.round((resolved / total) * 100) : 0;
 
     const message = `☑️ *تم إتمام عنصر في القائمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*التقدم:* ${resolved}/${total} (${progress}%)\n` +
       `*بواسطة:* ${userName}`;
 
@@ -648,9 +658,10 @@ class EnhancedNotificationService {
    */
   async handleAllChecklistsResolved(data) {
     const { task, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🎉 *تم إكمال جميع عناصر القائمة!*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*العناصر:* ${task.checklist_resolved}/${task.checklist_total}\n` +
       `*بواسطة:* ${userName}\n\n` +
       `رائع! الآن يمكنك إغلاق المهمة! ✨`;
@@ -666,9 +677,10 @@ class EnhancedNotificationService {
    */
   async handleSubtaskCreated(data) {
     const { task, subtasksTotal, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `📌 *تم إضافة مهمة فرعية*\n\n` +
-      `*المهمة الرئيسية:* ${task.name}\n` +
+      `*المهمة الرئيسية:* ${taskLabel}\n` +
       `*عدد المهام الفرعية:* ${subtasksTotal}\n` +
       `*بواسطة:* ${userName}`;
 
@@ -685,9 +697,10 @@ class EnhancedNotificationService {
    */
   async handleAllSubtasksResolved(data) {
     const { task, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🎊 *تم إكمال جميع المهام الفرعية!*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*المهام الفرعية:* ${task.subtasks_resolved}/${task.subtasks_total}\n` +
       `*بواسطة:* ${userName}\n\n` +
       `إنجاز ممتاز! 🏆`;
@@ -761,9 +774,10 @@ class EnhancedNotificationService {
    */
   async handleCustomFieldChanged(data) {
     const { task, fieldName, newValue, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `📊 *تم تحديث حقل مخصص*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*الحقل:* ${fieldName}\n` +
       `*القيمة الجديدة:* ${newValue}\n` +
       `*بواسطة:* ${userName}`;
@@ -781,9 +795,10 @@ class EnhancedNotificationService {
    */
   async handleTaskLinked(data) {
     const { task, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🔗 *تم ربط المهمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*بواسطة:* ${userName}`;
 
     this.addToQueue({
@@ -799,9 +814,10 @@ class EnhancedNotificationService {
    */
   async handleTaskUnlinked(data) {
     const { task, userName } = data;
+    const taskLabel = this.formatTaskNameWithParent(task);
 
     const message = `🔓 *تم إلغاء ربط المهمة*\n\n` +
-      `*المهمة:* ${task.name}\n` +
+      `*المهمة:* ${taskLabel}\n` +
       `*بواسطة:* ${userName}`;
 
     this.addToQueue({
@@ -818,6 +834,7 @@ class EnhancedNotificationService {
    * Build task created message
    */
   async buildTaskCreatedMessage(task, assignees, createdBy = 'غير معروف') {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('task_created_group', {
       task,
       assignees,
@@ -832,7 +849,7 @@ class EnhancedNotificationService {
     const complexity = task.ai_complexity || 'medium';
 
     let message = `📝 *مهمة جديدة*\n\n`;
-    message += `*الاسم:* ${task.name}\n`;
+    message += `*الاسم:* ${taskLabel}\n`;
     message += `*أنشأها:* ${createdBy}\n`;
     message += `*الأولوية:* ${task.priority_label || 'عادية'}\n`;
     message += `*الوزن AI:* ${aiWeight} نقطة (${this.translateComplexity(complexity)})\n`;
@@ -860,6 +877,7 @@ class EnhancedNotificationService {
    * Build task completed message
    */
   async buildTaskCompletedMessage(task, assignees, actionedBy, gamificationResult, completionBreakdown = []) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('task_completed_group', {
       task,
       assignees,
@@ -880,7 +898,7 @@ class EnhancedNotificationService {
       ? assignees.map(a => a.name).join(', ')
       : 'غير محدد';
 
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*المكلفون:* ${assigneeNames}\n`;
     message += `*تم الإغلاق بواسطة:* ${actionedBy}\n`;
     message += `*الوزن:* ${aiWeight} نقطة 💎 (${this.translateComplexity(complexity)})\n`;
@@ -902,6 +920,11 @@ class EnhancedNotificationService {
       message += `${this.formatCompletionBreakdown(completionBreakdown)}\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task, { bulletPrefix: '* ' });
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n🎯 ${this.buildCompletionHighlight(task, gamificationResult)}\n`;
     message += `\n🔗 ${task.url}`;
 
@@ -909,6 +932,7 @@ class EnhancedNotificationService {
   }
 
   async buildTaskStatusChangedMessage(task, beforeStatus, afterStatus, userName, assignees = [], transitionType = 'progress') {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('task_status_changed_group', {
       task,
       beforeStatus,
@@ -929,7 +953,7 @@ class EnhancedNotificationService {
       : 'غير محدد';
 
     let message = `🔄 *تغيير حالة المهمة*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*من:* ${prettyBefore}\n`;
     message += `*إلى:* ${prettyAfter}\n`;
     message += `*المكلفون:* ${assigneeNames}\n`;
@@ -939,6 +963,11 @@ class EnhancedNotificationService {
       message += `*نوع الإجراء:* إلغاء المهمة 🚫\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task, { bulletPrefix: '* ' });
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n💡 ${this.buildStatusChangeInsight(task, beforeStatus, afterStatus, userName)}\n`;
     message += `\n🔗 ${task.url}`;
 
@@ -946,6 +975,7 @@ class EnhancedNotificationService {
   }
 
   async buildCommentGroupMessage(task, userName, commentText, attachments, participants = []) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('comment_group', {
       task,
       userName,
@@ -963,7 +993,7 @@ class EnhancedNotificationService {
       : 'غير محدد';
 
     let message = `💬 *تعليق جديد على مهمة*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*بواسطة:* ${userName}\n`;
     message += `*المعنيون:* ${participantNames}\n`;
 
@@ -976,12 +1006,18 @@ class EnhancedNotificationService {
       message += `${this.formatAttachmentLines(attachments)}\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n🔗 ${task.url}`;
 
     return message;
   }
 
   async buildCommentDirectMessage(task, recipient, userName, commentText, attachments, actor = null) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('comment_dm', {
       task,
       recipient,
@@ -1003,7 +1039,7 @@ class EnhancedNotificationService {
       ? `📝 *تم تسجيل تعليقك على المهمة*\n\n`
       : `💬 *أضيف تعليق جديد لك*\n\n`;
 
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*من:* ${isActor ? 'أنت' : userName}\n`;
     message += `*إلى:* ${recipient.name}\n`;
 
@@ -1016,6 +1052,11 @@ class EnhancedNotificationService {
       message += `${this.formatAttachmentLines(attachments)}\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n📣 تم إشعارك لأنك مرتبط بهذه المهمة كمكلف أو منشئ.`;
     message += `\n🔗 ${task.url}`;
 
@@ -1026,10 +1067,11 @@ class EnhancedNotificationService {
    * Build task assigned message
    */
   async buildTaskAssignedMessage(task, assignee, assignedBy) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiWeight = task.ai_weight || 10;
 
     let message = `👤 *تم تكليفك بمهمة جديدة*\n\n`;
-    message += `*المهمة:* ${task.name}\n`;
+    message += `*المهمة:* ${taskLabel}\n`;
     message += `*الأولوية:* ${task.priority_label || 'عادية'}\n`;
     message += `*الوزن:* ${aiWeight} نقطة 💎\n`;
 
@@ -1057,6 +1099,7 @@ class EnhancedNotificationService {
    * Build DM for task assignment (AI-powered with strict template)
    */
   async buildTaskAssignedDM(task, assignee, assignedBy = 'غير معروف') {
+    const taskLabel = this.formatTaskNameWithParent(task);
     // Try AI template-based generation first
     const aiMessage = await this.generateNotificationWithTemplate('assignment_dm', {
       task,
@@ -1074,7 +1117,7 @@ class EnhancedNotificationService {
 
     let message = `👋 *مرحباً ${assignee.name}!*\n\n`;
     message += `🎯 *تم إسناد مهمة جديدة لك:*\n`;
-    message += `📝 ${task.name}\n\n`;
+    message += `📝 ${taskLabel}\n\n`;
     message += `*التفاصيل:*\n`;
     message += `• الأولوية: ${task.priority_label || 'عادية'}\n`;
     message += `• الوزن: ${aiWeight} نقطة 💎\n`;
@@ -1110,6 +1153,7 @@ class EnhancedNotificationService {
    * Build DM for task completion (AI-powered with strict template)
    */
   async buildCompletionDM(task, assignee, gamificationResult, actionedBy = 'غير معروف', completionOutcome = null) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     // Try AI template-based generation first
     const aiMessage = await this.generateNotificationWithTemplate('completion_dm', {
       task,
@@ -1127,7 +1171,7 @@ class EnhancedNotificationService {
 
     // Fallback: default message
     let message = `🎉 *أحسنت ${assignee.name}!*\n\n`;
-    message += `✅ لقد أكملت: *${task.name}*\n`;
+    message += `✅ لقد أكملت: *${taskLabel}*\n`;
     message += `👤 تم تعليم المهمة كمكتملة بواسطة: ${actionedBy}\n\n`;
 
     message += `*المكافآت:*\n`;
@@ -1152,6 +1196,11 @@ class EnhancedNotificationService {
     ];
     const randomTip = tips[Math.floor(Math.random() * tips.length)];
 
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n${randomTip}\n\n`;
     message += `🔥 استمر في الإنجاز!`;
 
@@ -1159,6 +1208,7 @@ class EnhancedNotificationService {
   }
 
   async buildCreatorCompletionDM(task, creator, assignees, actionedBy, gamificationResult, beforeStatus, afterStatus, completionBreakdown = []) {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('creator_completion_dm', {
       task,
       creator,
@@ -1185,7 +1235,7 @@ class EnhancedNotificationService {
     const nextStep = this.buildCreatorNextStep(task, 'closed', assignees, actionedBy, creator);
 
     let message = `👋 *${creator.name || 'قائد المهمة'}*، تحديث حول المهمة التي أنشأتها.\n\n`;
-    message += `📝 ${task.name}\n`;
+    message += `📝 ${taskLabel}\n`;
 
     if (prettyBefore && prettyBefore !== prettyAfter) {
       message += `🔄 الحالة: ${prettyBefore} → ${prettyAfter}\n`;
@@ -1216,12 +1266,18 @@ class EnhancedNotificationService {
       message += `\n📌 ${nextStep}\n`;
     }
 
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
+    }
+
     message += `\n🔗 ${task.url}`;
 
     return message;
   }
 
   async buildCreatorStatusDM(task, creator, beforeStatus, afterStatus, actionedBy, assignees, transitionType = 'progress') {
+    const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('creator_status_dm', {
       task,
       creator,
@@ -1246,7 +1302,7 @@ class EnhancedNotificationService {
     const nextStep = this.buildCreatorNextStep(task, transitionType, assignees, actionedBy, creator);
 
     let message = `👋 *${creator.name || 'قائد المهمة'}*، تحديث حول المهمة التي كلفت بها الفريق.\n\n`;
-    message += `📝 ${task.name}\n`;
+    message += `📝 ${taskLabel}\n`;
     message += `🔄 من: ${prettyBefore} → ${prettyAfter}\n`;
     message += `👤 الإجراء بواسطة: ${actionedBy}\n`;
 
@@ -1270,6 +1326,11 @@ class EnhancedNotificationService {
 
     if (nextStep) {
       message += `\n📌 ${nextStep}\n`;
+    }
+
+    const parentBlock = this.buildParentDetailBlock(task);
+    if (parentBlock) {
+      message += `\n${parentBlock}`;
     }
 
     message += `\n🔗 ${task.url}`;
@@ -2012,8 +2073,9 @@ class EnhancedNotificationService {
           const points = item.data?.gamificationResult?.pointsEarned || 0;
           const badges = item.data?.gamificationResult?.newBadges?.length || 0;
           const weight = item.task.ai_weight || 10;
+          const taskLabel = this.formatTaskNameWithParent(item.task);
 
-          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `  ${i + 1}️⃣ *${taskLabel}*\n`;
           finalMessage += `     👥 المكلفون: ${ownerNames}\n`;
           finalMessage += `     👤 الإجراء بواسطة: ${actionedBy}\n`;
           finalMessage += `     💎 ${weight} نقطة • 🎯 كسب ${points} نقطة`;
@@ -2071,8 +2133,9 @@ class EnhancedNotificationService {
         const complexity = item.task.ai_complexity || 'medium';
         const complexityAr = this.translateComplexity(complexity);
         const createdBy = item.data?.createdBy || 'غير معروف';
+        const taskLabel = this.formatTaskNameWithParent(item.task);
 
-        finalMessage += `  ${createdEntryCount}️⃣ *${item.task.name}*\n`;
+        finalMessage += `  ${createdEntryCount}️⃣ *${taskLabel}*\n`;
 
         if (assignees.length > 0) {
           const names = assignees.map(a => a.name).join('، ');
@@ -2106,8 +2169,9 @@ class EnhancedNotificationService {
           const assignees = item.data?.assignees || [];
           const weight = item.task.ai_weight || 10;
           const assignedBy = item.data?.assignedBy || 'Unknown';
+          const taskLabel = this.formatTaskNameWithParent(item.task);
 
-          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `  ${i + 1}️⃣ *${taskLabel}*\n`;
 
           if (assignees.length > 0) {
             const names = assignees.map(a => a.name).join('، ');
@@ -2138,8 +2202,9 @@ class EnhancedNotificationService {
           const assignees = Array.isArray(data.assignees) ? data.assignees : [];
           const ownerNames = assignees.length > 0 ? assignees.map(a => a.name).join('، ') : 'غير محدد';
           const transitionType = data.transitionType || 'progress';
+          const taskLabel = this.formatTaskNameWithParent(item.task);
 
-          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `  ${i + 1}️⃣ *${taskLabel}*\n`;
           finalMessage += `     ${data.beforeStatus} ➜ ${data.afterStatus}\n`;
           finalMessage += `     👥 المكلفون: ${ownerNames}\n`;
           finalMessage += `     👤 بواسطة: ${actionedBy}`;
@@ -2161,8 +2226,9 @@ class EnhancedNotificationService {
         if (i < 3) {
           const data = item.data || {};
           const userName = data.userName || 'Unknown';
+          const taskLabel = this.formatTaskNameWithParent(item.task);
 
-          finalMessage += `  ${i + 1}️⃣ *${item.task.name}*\n`;
+          finalMessage += `  ${i + 1}️⃣ *${taskLabel}*\n`;
           finalMessage += `     ${data.beforePriority} ➜ ${data.afterPriority}\n`;
           finalMessage += `     👤 ${userName}\n\n`;
         }
@@ -2177,7 +2243,8 @@ class EnhancedNotificationService {
       finalMessage += `📌 *تحديثات أخرى (${byType.other.length}):*\n\n`;
       byType.other.forEach((item, i) => {
         if (i < 3) {
-          finalMessage += `  ${i + 1}️⃣ ${item.task.name}\n`;
+          const taskLabel = this.formatTaskNameWithParent(item.task);
+          finalMessage += `  ${i + 1}️⃣ ${taskLabel}\n`;
           if (item.message) {
             // Show first line of message only
             const firstLine = item.message.split('\n')[0];
@@ -2321,6 +2388,19 @@ class EnhancedNotificationService {
     return `تابعة لـ ${parentName}`;
   }
 
+  formatTaskNameWithParent(task) {
+    if (!task) {
+      return 'مهمة';
+    }
+
+    const baseName = task.name || 'مهمة بدون اسم';
+    const parentContext = this.buildParentInlineContext(task);
+
+    return parentContext
+      ? `${baseName} (${parentContext})`
+      : baseName;
+  }
+
   buildParentDetailBlock(task, options = {}) {
     if (!this.hasParentContext(task)) {
       return '';
@@ -2402,8 +2482,9 @@ class EnhancedNotificationService {
     const priority = item.task.priority_label || 'عادية';
     const weight = item.task.ai_weight || 10;
     const complexity = this.translateComplexity(item.task.ai_complexity || 'medium');
+    const taskLabel = this.formatTaskNameWithParent(item.task);
 
-    let line = `        • ${item.task.name}\n`;
+    let line = `        • ${taskLabel}\n`;
     line += `          👥 ${assigneeNames} • 🧑‍💼 ${createdBy}\n`;
     line += `          🔸 ${priority} • 💎 ${weight} نقطة • ${complexity}\n`;
     return line;

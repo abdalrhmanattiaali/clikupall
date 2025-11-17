@@ -367,23 +367,59 @@ class SchedulerService {
           !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
-        const systemPrompt = `أنت مساعد تحليلي. اكتب ملخصاً قصيراً (3-4 جمل) عن أداء اليوم بطريقة تحفيزية.`;
+        let badgeCount = 0;
+        let latestBadge = null;
 
-        const userMessage = `المستخدم: ${member.name}
-مهام اليوم المكتملة: ${stats.today}
-المهام المفتوحة: ${openTasks.length}
-إجمالي المهام: ${stats.total}
+        try {
+          const gamificationStats = await gamificationService.getUserStats(member.id);
+          const earnedBadges = Array.isArray(gamificationStats?.earnedBadges)
+            ? gamificationStats.earnedBadges
+            : [];
+          badgeCount = earnedBadges.length;
+          latestBadge = earnedBadges.length > 0 ? earnedBadges[earnedBadges.length - 1] : null;
+        } catch (error) {
+          logger.error('Failed to load gamification stats for daily summary', {
+            member: member.name,
+            error: error.message
+          });
+        }
 
-اكتب ملخصاً تحفيزياً قصيراً عن اليوم.`;
+        const badgeLabel = latestBadge
+          ? getBadgeById(latestBadge)?.name || `${badgeCount} أوسمة`
+          : `${badgeCount} أوسمة`;
+
+        const statsBlock = [
+          `• المنجز اليوم: ${stats.today} مهمة`,
+          `• مفتوحة حالياً: ${openTasks.length} مهمة`,
+          `• إجمالي الإنجاز: ${stats.total} مهمة`,
+          `• وسوم وتحفيز: ${badgeLabel}`
+        ].join('\n');
+
+        const systemPrompt = `أنت محلل أداء شخصي. استعمل لغة عربية رسمية واضحة تعتمد على الأرقام وتقدم استنتاجات عملية مختصرة.
+- لا تستخدم عبارات عاطفية أو مجاملات.
+- اربط التعليقات مباشرة بمعطيات اليوم.
+- اختم بجملة توصي بخطوة تالية قابلة للتنفيذ.`;
+
+        const userMessage = `بيانات المستخدم ${member.name}:
+${statsBlock}
+
+أنتج فقرة موجزة (3 جمل كحد أقصى) تلخص وضع اليوم وتعطي توصية عملية.`;
 
         const aiMessage = await aiService.generateCompletion(
           systemPrompt,
-          userMessage
+          userMessage,
+          { temperature: 0.35 }
         );
+
+        const finalMessage = `📊 *ملخص يومك*
+${statsBlock}
+
+🧠 *تحليل اليوم:*
+${aiMessage}`;
 
         await whatsappService.sendToUser(
           member.phone,
-          `📊 *ملخص يومك*\n\n${aiMessage}`
+          finalMessage
         );
 
         logger.debug('AI daily summary sent', { user: member.name });
@@ -495,17 +531,29 @@ class SchedulerService {
         }
       });
 
-      const systemPrompt = `أنت محلل أداء للفريق. استخدم لغة تحفيزية ولكن اعتمد على الأرقام بشكل أساسي وقدم قراءة شبيهة بتغطية رياضية.`;
+      const dataLines = lines.join('\n');
 
-      const userMessage = `بيانات الفريق اليوم:\n${lines.join('\n')}\n\nإجمالي المهام المنجزة: ${totalCompleted}\nإجمالي المهام المفتوحة: ${totalOpen}\nأفضل أداء: @${bestPerformer.name || 'غير محدد'} (${bestPerformer.count > -1 ? bestPerformer.count : 0} مهمة)\n\nحلل التوجهات، أشر إلى نقاط القوة والضغط، واقترح تركيز الغد.`;
+      const systemPrompt = `أنت محلل بيانات لفريق عمليات. اكتب فقرة مركزة تعتمد على الأرقام التالية وتقدم قراءة احترافية بلا مبالغة عاطفية.
+- اربط الأرقام باتجاهات واضحة.
+- استنتج أين يوجد ضغط أو فجوات.
+- اختم بتوصية محددة لليوم التالي.`;
+
+      const userMessage = `بيانات اليوم:\n${dataLines}\n\nإجمالي المنجز اليوم: ${totalCompleted}\nإجمالي المفتوح: ${totalOpen}\nأفضل أداء: @${bestPerformer.name || 'غير محدد'} (${bestPerformer.count > -1 ? bestPerformer.count : 0} مهمة).\n\nحلل الوضع وقدّم توصية دقيقة.`;
 
       const aiMessage = await aiService.generateCompletion(
         systemPrompt,
-        userMessage
+        userMessage,
+        { temperature: 0.3 }
       );
 
+      const finalMessage = `🔥 *ملخص الفريق (AI)*
+${dataLines}
+
+🧠 *تحليل اليوم:*
+${aiMessage}`;
+
       await whatsappService.sendToGroup(
-        `🔥 *ملخص الفريق (AI)*\n\n${aiMessage}`,
+        finalMessage,
         { pin: true }
       );
 
@@ -561,7 +609,7 @@ class SchedulerService {
 
       if (topMembers.length > 0 && topCount > 0) {
         const championMentions = topMembers.map(entry => `@${entry.member.name}`).join('، ');
-        message += `🎖️ *وسام بطل اليوم*: ${championMentions} (${topCount} ${topCount === 1 ? 'مهمة' : 'مهام'})\n`;
+        message += `🎖️ *وسام بطل اليوم*: ${championMentions} — ${topCount} ${topCount === 1 ? 'مهمة' : 'مهام'} منجزة\n`;
 
         for (const entry of topMembers) {
           await gamificationService.awardDailyChampion(entry.member.id, {
@@ -570,9 +618,9 @@ class SchedulerService {
           });
         }
 
-        message += `👏 عمل رائع يا ${championMentions}! استمروا في قيادة الإيقاع.`;
+        message += `📌 قراءة: ${championMentions} يقود${topMembers.length > 1 ? 'ون' : ''} وتيرة الإنجاز اليوم. حافظ${topMembers.length > 1 ? 'وا' : ''} على نفس المستوى وراقب${topMembers.length > 1 ? 'وا' : ''} المهام المفتوحة لتجنب تراكم جديد.`;
       } else {
-        message += '🎯 نحتاج دفعة غداً — شارك فريقك بخطة إنجاز سريعة.';
+        message += '🎯 لا يوجد متصدر واضح اليوم. ركزوا غداً على غلق المهام المفتوحة قبل إضافة أعمال جديدة.';
       }
 
       await whatsappService.sendToGroup(message, { pin: true });

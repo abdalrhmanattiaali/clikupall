@@ -367,6 +367,18 @@ class SchedulerService {
           !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
+        const todayTasks = Array.isArray(stats.todayTaskDetails)
+          ? stats.todayTaskDetails
+          : [];
+        const tasksHighlightBlock = this.buildTaskHighlightLines(todayTasks, {
+          numbered: true,
+          limit: 4,
+          showWhenEmpty: true
+        });
+        const aiTasksSummary = todayTasks.length > 0
+          ? todayTasks.slice(0, 4).map(task => this.describeTaskForHighlights(task)).join('\n')
+          : 'لا توجد مهام مكتملة اليوم';
+
         let badgeCount = 0;
         let latestBadge = null;
 
@@ -398,12 +410,16 @@ class SchedulerService {
         const systemPrompt = `أنت محلل أداء شخصي. استعمل لغة عربية رسمية واضحة تعتمد على الأرقام وتقدم استنتاجات عملية مختصرة.
 - لا تستخدم عبارات عاطفية أو مجاملات.
 - اربط التعليقات مباشرة بمعطيات اليوم.
+- استشهد بأسماء المهام المنجزة عندما تكون متاحة وفسر ما تمثله.
 - اختم بجملة توصي بخطوة تالية قابلة للتنفيذ.`;
 
         const userMessage = `بيانات المستخدم ${member.name}:
 ${statsBlock}
 
-أنتج فقرة موجزة (3 جمل كحد أقصى) تلخص وضع اليوم وتعطي توصية عملية.`;
+قائمة المهام المنجزة اليوم:
+${aiTasksSummary}
+
+أنتج فقرة موجزة (3 جمل كحد أقصى) تلخص وضع اليوم وتعطي توصية عملية تستند إلى البيانات والمهام المذكورة.`;
 
         const aiMessage = await aiService.generateCompletion(
           systemPrompt,
@@ -413,6 +429,9 @@ ${statsBlock}
 
         const finalMessage = `📊 *ملخص يومك*
 ${statsBlock}
+
+📌 *أبرز مهام اليوم*
+${tasksHighlightBlock}
 
 🧠 *تحليل اليوم:*
 ${aiMessage}`;
@@ -524,7 +543,12 @@ ${aiMessage}`;
         totalCompleted += today;
         totalOpen += openCount;
 
-        lines.push(`@${entry.member.name}: ${today} منجزة، ${openCount} مفتوحة، إجمالي ${total}, أوسمة ${badgeCount}`);
+        const condensedTasks = (entry.stats?.todayTaskDetails || [])
+          .slice(0, 2)
+          .map(task => this.describeTaskForHighlights(task))
+          .join('، ');
+        const taskContext = condensedTasks ? ` | مهام: ${condensedTasks}` : '';
+        lines.push(`@${entry.member.name}: ${today} منجزة، ${openCount} مفتوحة، إجمالي ${total}, أوسمة ${badgeCount}${taskContext}`);
 
         if (today > bestPerformer.count) {
           bestPerformer = { name: entry.member.name, count: today };
@@ -532,13 +556,16 @@ ${aiMessage}`;
       });
 
       const dataLines = lines.join('\n');
+      const teamTasksDigestForMessage = this.buildTeamTasksDigest(snapshot, { perMemberLimit: 3, includeEmpty: false });
+      const teamTasksDigestForAi = this.buildTeamTasksDigest(snapshot, { perMemberLimit: 3, includeEmpty: true })
+        || 'لا توجد مهام منجزة اليوم.';
 
       const systemPrompt = `أنت محلل بيانات لفريق عمليات. اكتب فقرة مركزة تعتمد على الأرقام التالية وتقدم قراءة احترافية بلا مبالغة عاطفية.
 - اربط الأرقام باتجاهات واضحة.
 - استنتج أين يوجد ضغط أو فجوات.
 - اختم بتوصية محددة لليوم التالي.`;
 
-      const userMessage = `بيانات اليوم:\n${dataLines}\n\nإجمالي المنجز اليوم: ${totalCompleted}\nإجمالي المفتوح: ${totalOpen}\nأفضل أداء: @${bestPerformer.name || 'غير محدد'} (${bestPerformer.count > -1 ? bestPerformer.count : 0} مهمة).\n\nحلل الوضع وقدّم توصية دقيقة.`;
+      const userMessage = `بيانات اليوم:\n${dataLines}\n\nتفاصيل المهام:\n${teamTasksDigestForAi}\n\nإجمالي المنجز اليوم: ${totalCompleted}\nإجمالي المفتوح: ${totalOpen}\nأفضل أداء: @${bestPerformer.name || 'غير محدد'} (${bestPerformer.count > -1 ? bestPerformer.count : 0} مهمة).\n\nحلل الوضع وقدّم توصية دقيقة تستند إلى كل من الأرقام والمهام المذكورة.`;
 
       const aiMessage = await aiService.generateCompletion(
         systemPrompt,
@@ -546,9 +573,13 @@ ${aiMessage}`;
         { temperature: 0.3 }
       );
 
+      const tasksDigestBlock = teamTasksDigestForMessage
+        ? `\n🧾 *أبرز المهام اليوم:*\n${teamTasksDigestForMessage}\n`
+        : '';
+
       const finalMessage = `🔥 *ملخص الفريق (AI)*
 ${dataLines}
-
+${tasksDigestBlock}
 🧠 *تحليل اليوم:*
 ${aiMessage}`;
 
@@ -597,6 +628,14 @@ ${aiMessage}`;
         message += `  📊 هذا الأسبوع: ${stats.week} مهام\n`;
         message += `  📦 الإجمالي: ${stats.total} مهام\n`;
         message += `  🎖️ الأوسمة: ${entry.badgeCount}${badgeList.length > 0 ? ` (آخرها: ${badgeList.join('، ')})` : ''}\n\n`;
+        const taskHighlights = this.buildTaskHighlightLines(entry.stats?.todayTaskDetails || [], {
+          limit: 2,
+          bullet: '    • ',
+          showWhenEmpty: false
+        });
+        if (taskHighlights) {
+          message += `${taskHighlights}\n\n`;
+        }
 
         if (stats.today > topCount) {
           topCount = stats.today;
@@ -860,6 +899,69 @@ ${aiMessage}`;
       'very_complex': 'معقدة جداً'
     };
     return translations[complexity] || 'متوسطة';
+  }
+
+  describeTaskForHighlights(task) {
+    if (!task) {
+      return 'مهمة بدون اسم';
+    }
+
+    const baseName = task.name || 'مهمة بدون اسم';
+    const parentContext = task.parentName ? ` ← ${task.parentName}` : '';
+    const aiWeight = Number(task.aiWeight);
+    const weightLabel = Number.isFinite(aiWeight) && aiWeight > 0 ? ` — ${aiWeight} نقطة` : '';
+
+    return `${baseName}${parentContext}${weightLabel}`;
+  }
+
+  buildTaskHighlightLines(tasks = [], options = {}) {
+    const {
+      limit = 3,
+      bullet = '• ',
+      numbered = false,
+      showWhenEmpty = true
+    } = options;
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return showWhenEmpty ? `${bullet}لا توجد مهام مكتملة اليوم` : '';
+    }
+
+    const selected = tasks.slice(0, limit);
+
+    return selected
+      .map((task, index) => {
+        const prefix = numbered ? `${index + 1}. ` : bullet;
+        return `${prefix}${this.describeTaskForHighlights(task)}`;
+      })
+      .join('\n');
+  }
+
+  buildTeamTasksDigest(snapshot = [], options = {}) {
+    if (!Array.isArray(snapshot) || snapshot.length === 0) {
+      return '';
+    }
+
+    const {
+      perMemberLimit = 3,
+      includeEmpty = false
+    } = options;
+
+    const lines = [];
+
+    snapshot.forEach(entry => {
+      const tasks = entry.stats?.todayTaskDetails || [];
+      if (tasks.length === 0 && !includeEmpty) {
+        return;
+      }
+
+      const label = tasks.length > 0
+        ? tasks.slice(0, perMemberLimit).map(task => this.describeTaskForHighlights(task)).join('، ')
+        : 'لا توجد مهام مكتملة اليوم';
+
+      lines.push(`@${entry.member.name}: ${label}`);
+    });
+
+    return lines.join('\n');
   }
 
   /**

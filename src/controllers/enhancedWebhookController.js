@@ -261,6 +261,41 @@ function buildAiWeightSharePlan(task, participantCount = 1) {
   };
 }
 
+function extractParentMetadata(task) {
+  if (!task) {
+    return {
+      parentId: null,
+      parentName: null,
+      parentUrl: null
+    };
+  }
+
+  const parentId = task.parent
+    || task.parent_id
+    || task.parentId
+    || task.parent_task?.id
+    || task.parentTask?.id
+    || null;
+
+  const parentName = task.parent_name
+    || task.parentName
+    || task.parent_task?.name
+    || task.parentTask?.name
+    || null;
+
+  const parentUrl = task.parent_url
+    || task.parentUrl
+    || task.parent_task?.url
+    || task.parentTask?.url
+    || (parentId ? `https://app.clickup.com/t/${parentId}` : null);
+
+  return {
+    parentId,
+    parentName,
+    parentUrl
+  };
+}
+
 async function recordCompletionForAssignee(task, assignee, actionedBy, options = {}) {
   const statKey = buildAssigneeStatKey(assignee);
   const categories = analyzeTaskCategory(task);
@@ -295,6 +330,8 @@ async function recordCompletionForAssignee(task, assignee, actionedBy, options =
   let productivityEntry = null;
   let gamificationResult = null;
 
+  const parentMetadata = extractParentMetadata(task);
+
   try {
     productivityEntry = await productivityRepo.addEntry({
       type: 'task_completed',
@@ -304,9 +341,15 @@ async function recordCompletionForAssignee(task, assignee, actionedBy, options =
       timestamp: Date.now(),
       isSubtask: !!task.parent,
       parentId: task.parent || null,
+      parentName: parentMetadata.parentName,
+      parentUrl: parentMetadata.parentUrl,
       categories,
       taskName: task.name,
       taskDescription: task.description || '',
+      taskUrl: task.url || null,
+      aiWeightShare,
+      aiWeightTotal,
+      aiComplexity: task.ai_complexity || task.aiComplexity || task.complexity || null,
       completedBy: actionedBy
     });
   } catch (error) {

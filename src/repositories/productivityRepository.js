@@ -178,6 +178,9 @@ class ProductivityRepository extends BaseRepository {
     const topCategory = Object.entries(categories)
       .sort((a, b) => b[1] - a[1])[0];
 
+    const todayTaskDetails = this.buildTaskEntryDetails(todayEntries, 5);
+    const recentTaskDetails = this.buildTaskEntryDetails(allEntries, 5);
+
     return {
       total: allEntries.length,
       today: todayEntries.length,
@@ -187,8 +190,35 @@ class ProductivityRepository extends BaseRepository {
       mostProductiveDay,
       mostProductiveDayCount: maxCount,
       topCategory: topCategory ? topCategory[0] : null,
-      topCategoryCount: topCategory ? topCategory[1] : 0
+      topCategoryCount: topCategory ? topCategory[1] : 0,
+      todayTaskDetails,
+      recentTaskDetails
     };
+  }
+
+  buildTaskEntryDetails(entries = [], limit = 5) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return [];
+    }
+
+    const sorted = [...entries].sort((a, b) => {
+      const aTime = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const bTime = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      return bTime - aTime;
+    });
+
+    return sorted.slice(0, limit).map(entry => ({
+      taskId: entry.taskId,
+      name: entry.taskName || 'مهمة بدون اسم',
+      parentId: entry.parentId || null,
+      parentName: entry.parentName || null,
+      parentUrl: entry.parentUrl || null,
+      isSubtask: Boolean(entry.isSubtask),
+      aiWeight: Number(entry.aiWeightShare || entry.aiWeightTotal) || null,
+      aiComplexity: entry.aiComplexity || null,
+      completedAt: entry.timestamp,
+      taskUrl: entry.taskUrl || (entry.taskId ? `https://app.clickup.com/t/${entry.taskId}` : null)
+    }));
   }
 
   /**

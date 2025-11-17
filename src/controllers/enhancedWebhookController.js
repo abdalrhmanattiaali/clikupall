@@ -224,7 +224,44 @@ function buildAssigneeStatKey(assignee) {
     || (assignee.id ? `عضو ${assignee.id}` : 'عضو غير معروف');
 }
 
-async function recordCompletionForAssignee(task, assignee, actionedBy) {
+function getSafeAiWeight(task) {
+  const raw = Number(task?.ai_weight);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw;
+  }
+
+  return 10;
+}
+
+function buildAiWeightSharePlan(task, participantCount = 1) {
+  const totalWeight = getSafeAiWeight(task);
+  const count = Math.max(1, participantCount || 1);
+  const normalizedShare = Number((totalWeight / count).toFixed(2));
+  const shares = [];
+  let allocated = 0;
+
+  for (let index = 0; index < count; index += 1) {
+    let share = normalizedShare;
+
+    if (index === count - 1) {
+      const remaining = Number((totalWeight - allocated).toFixed(2));
+      share = remaining > 0 ? remaining : normalizedShare;
+    } else {
+      allocated = Number((allocated + share).toFixed(2));
+    }
+
+    shares.push(share);
+  }
+
+  return {
+    totalWeight,
+    participantCount: count,
+    defaultShare: normalizedShare,
+    shares
+  };
+}
+
+async function recordCompletionForAssignee(task, assignee, actionedBy, options = {}) {
   const statKey = buildAssigneeStatKey(assignee);
   const categories = analyzeTaskCategory(task);
   const aliasSet = new Set();
@@ -249,6 +286,12 @@ async function recordCompletionForAssignee(task, assignee, actionedBy) {
   }
 
   const userAliases = Array.from(aliasSet.values());
+  const aiWeightTotal = Number.isFinite(Number(options.aiWeightTotal)) && Number(options.aiWeightTotal) > 0
+    ? Number(options.aiWeightTotal)
+    : getSafeAiWeight(task);
+  const aiWeightShare = Number.isFinite(Number(options.aiWeightShare)) && Number(options.aiWeightShare) > 0
+    ? Number(options.aiWeightShare)
+    : aiWeightTotal;
   let productivityEntry = null;
   let gamificationResult = null;
 
@@ -280,7 +323,14 @@ async function recordCompletionForAssignee(task, assignee, actionedBy) {
 
   if (Number.isFinite(numericId)) {
     try {
-      gamificationResult = await gamificationService.processCompletedTask(task, numericId);
+      const scoringTask = {
+        ...task,
+        ai_weight: aiWeightShare,
+        ai_weight_share: aiWeightShare,
+        ai_weight_total: aiWeightTotal
+      };
+
+      gamificationResult = await gamificationService.processCompletedTask(scoringTask, numericId);
     } catch (error) {
       logger.error('Gamification processing failed for assignee', {
         taskId: task?.id,
@@ -299,7 +349,9 @@ async function recordCompletionForAssignee(task, assignee, actionedBy) {
     assignee,
     assigneeKey: statKey,
     gamificationResult,
-    productivityEntry
+    productivityEntry,
+    aiWeightShare,
+    aiWeightTotal
   };
 }
 
@@ -309,12 +361,20 @@ function aggregateCompletionGamification(outcomes = []) {
   }
 
   let totalPoints = 0;
+  let totalAiWeightAwarded = 0;
+  let aiWeightTotal = null;
   const combinedBadges = [];
   let firstUpgrade = null;
 
   const breakdown = outcomes.map(outcome => {
     const points = outcome?.gamificationResult?.pointsEarned || 0;
     totalPoints += points;
+    const totalForOutcome = Number(outcome?.aiWeightTotal);
+    const aiShare = Number(outcome?.aiWeightShare) || 0;
+    totalAiWeightAwarded += aiShare;
+    if (aiWeightTotal === null && Number.isFinite(totalForOutcome)) {
+      aiWeightTotal = totalForOutcome;
+    }
 
     const badges = Array.isArray(outcome?.gamificationResult?.newBadges)
       ? outcome.gamificationResult.newBadges.map(badge => ({
@@ -337,7 +397,9 @@ function aggregateCompletionGamification(outcomes = []) {
       assigneeKey: outcome.assigneeKey,
       points,
       badges,
-      shieldUpgrade: outcome?.gamificationResult?.shieldUpgrade || null
+      shieldUpgrade: outcome?.gamificationResult?.shieldUpgrade || null,
+      aiWeightShare: aiShare,
+      aiWeightTotal: Number.isFinite(totalForOutcome) ? totalForOutcome : null
     };
   });
 
@@ -346,7 +408,9 @@ function aggregateCompletionGamification(outcomes = []) {
     totalPoints,
     newBadges: combinedBadges,
     shieldUpgrade: firstUpgrade,
-    breakdown
+    breakdown,
+    aiWeightTotal,
+    aiWeightAwarded: totalAiWeightAwarded
   };
 
   return { summary };
@@ -557,9 +621,31 @@ async function processWebhook(req, res, options = {}) {
       }
     }
 
-    // Calculate AI weight if not already done
+    // Calculate AI weight if not already done and hydrate current snapshot
     if (!task.ai_weight) {
-      await taskWeightingService.calculateTaskWeight(task);
+      const aiAnalysis = await taskWeightingService.calculateTaskWeight(task);
+
+      if (aiAnalysis && typeof aiAnalysis === 'object') {
+        if (typeof aiAnalysis.weight === 'number') {
+          task.ai_weight = aiAnalysis.weight;
+        }
+
+        if (aiAnalysis.complexity) {
+          task.ai_complexity = aiAnalysis.complexity;
+        }
+
+        if (typeof aiAnalysis.estimated_time !== 'undefined') {
+          task.ai_estimated_time = aiAnalysis.estimated_time;
+        }
+
+        if (Array.isArray(aiAnalysis.skills_required)) {
+          task.ai_skills_required = aiAnalysis.skills_required;
+        }
+
+        if (Array.isArray(aiAnalysis.dependencies)) {
+          task.ai_dependencies = aiAnalysis.dependencies;
+        }
+      }
     }
 
     await enrichTaskWithParentDetails(task);
@@ -1143,15 +1229,24 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
 
   if (isComplete && !isCancelled) {
     const completionOutcomes = [];
+    const shareRecipientCount = Math.max(1, assignees.length || 1);
+    const weightPlan = buildAiWeightSharePlan(task, shareRecipientCount);
 
     if (assignees.length === 0 && completionTarget) {
-      const syntheticOutcome = await recordCompletionForAssignee(task, completionTarget, actionedBy);
+      const syntheticOutcome = await recordCompletionForAssignee(task, completionTarget, actionedBy, {
+        aiWeightShare: weightPlan.shares[0] || weightPlan.defaultShare,
+        aiWeightTotal: weightPlan.totalWeight
+      });
       if (syntheticOutcome) {
         completionOutcomes.push(syntheticOutcome);
       }
     } else {
-      for (const assignee of assignees) {
-        const outcome = await recordCompletionForAssignee(task, assignee, actionedBy);
+      for (let index = 0; index < assignees.length; index += 1) {
+        const assignee = assignees[index];
+        const outcome = await recordCompletionForAssignee(task, assignee, actionedBy, {
+          aiWeightShare: weightPlan.shares[index] || weightPlan.defaultShare,
+          aiWeightTotal: weightPlan.totalWeight
+        });
         if (outcome) {
           completionOutcomes.push(outcome);
         }
@@ -1171,7 +1266,13 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       completionTargetId: completionTarget?.id || null,
       completionTargetName: completionTarget?.name || null,
       completionOutcomes,
-      creator
+      creator,
+      aiWeightSplit: {
+        total: weightPlan.totalWeight,
+        perAssignee: weightPlan.participantCount > 0
+          ? Number((weightPlan.totalWeight / weightPlan.participantCount).toFixed(2))
+          : weightPlan.totalWeight
+      }
     });
 
     logger.success('Task completed event emitted', {
@@ -1182,7 +1283,10 @@ async function handleStatusChanged(task, historyItem, changedBy, context = {}) {
       points: aggregated?.pointsEarned,
       actionedBy,
       creditedTo: assignees.length > 0 ? assignees.map(a => a.name).join(', ') : (completionTarget?.name || 'غير محدد'),
-      creator: creator?.name || creator?.username || null
+      creator: creator?.name || creator?.username || null,
+      aiWeightPerAssignee: weightPlan.participantCount > 0
+        ? Number((weightPlan.totalWeight / weightPlan.participantCount).toFixed(2))
+        : weightPlan.totalWeight
     });
   } else {
     eventBus.emitEvent(EVENTS.TASK_STATUS_CHANGED, {

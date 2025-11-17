@@ -483,7 +483,7 @@ export const ALL_BADGES = [
  */
 export const BADGE_RARITY = {
   common: { name: 'شائع', color: '#95a5a6', emoji: '⚪' },
-  uncommon: { name: 'غير شائع', color: '#27ae60', emoji: '🟢' },
+  uncommon: { name: 'مستوى مميز', color: '#27ae60', emoji: '🟢' },
   rare: { name: 'نادر', color: '#3498db', emoji: '🔵' },
   epic: { name: 'ملحمي', color: '#9b59b6', emoji: '🟣' },
   legendary: { name: 'أسطوري', color: '#f39c12', emoji: '🟡' }

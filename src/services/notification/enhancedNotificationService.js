@@ -847,6 +847,7 @@ class EnhancedNotificationService {
 
     const aiWeight = task.ai_weight || 10;
     const complexity = task.ai_complexity || 'medium';
+    const shareInfo = this.extractAiShareInfo(completionBreakdown, task, assignees?.length || 0);
 
     let message = `📝 *مهمة جديدة*\n\n`;
     message += `*الاسم:* ${taskLabel}\n`;
@@ -901,7 +902,12 @@ class EnhancedNotificationService {
     message += `*المهمة:* ${taskLabel}\n`;
     message += `*المكلفون:* ${assigneeNames}\n`;
     message += `*تم الإغلاق بواسطة:* ${actionedBy}\n`;
-    message += `*الوزن:* ${aiWeight} نقطة 💎 (${this.translateComplexity(complexity)})\n`;
+
+    if (shareInfo && (assignees?.length || 0) > 1) {
+      message += `*الوزن لكل مكلف:* ${shareInfo.perAssignee} نقطة من أصل ${shareInfo.total} 💎 (${this.translateComplexity(complexity)})\n`;
+    } else {
+      message += `*الوزن:* ${aiWeight} نقطة 💎 (${this.translateComplexity(complexity)})\n`;
+    }
 
     if (gamificationResult) {
       message += `*النقاط المكتسبة:* ${gamificationResult.pointsEarned || 0} نقطة 🎯\n`;
@@ -1190,6 +1196,11 @@ class EnhancedNotificationService {
 
     message += `*المكافآت:*\n`;
     message += `• ${safeGamification.pointsEarned || 0} نقطة 🎯\n`;
+
+    const personalShareLabel = this.describeAiShare(completionOutcome, task);
+    if (personalShareLabel) {
+      message += `• وزن المهمة لك: ${personalShareLabel} 💎\n`;
+    }
 
     if (safeGamification.newBadges && safeGamification.newBadges.length > 0) {
       message += `• ${safeGamification.newBadges.length} وسام جديد! 🏆\n`;
@@ -1807,6 +1818,7 @@ class EnhancedNotificationService {
       const badgeCount = Array.isArray(outcome?.gamificationResult?.newBadges)
         ? outcome.gamificationResult.newBadges.length
         : 0;
+      const shareSuffix = this.formatAiShareSuffix(outcome);
 
       let line = `• ${assigneeName}: ${points} نقطة`;
 
@@ -1814,10 +1826,76 @@ class EnhancedNotificationService {
         line += ` + ${badgeCount} وسام`;
       }
 
+      if (shareSuffix) {
+        line += ` (${shareSuffix})`;
+      }
+
       return line;
     });
 
     return lines.join('\n');
+  }
+
+  formatAiShareSuffix(outcome) {
+    const share = Number(outcome?.aiWeightShare);
+    if (!Number.isFinite(share) || share <= 0) {
+      return '';
+    }
+
+    const total = Number(outcome?.aiWeightTotal);
+    if (Number.isFinite(total) && total > 0 && Math.abs(total - share) > 0.01) {
+      return `وزنه ${share} من أصل ${total} نقطة`;
+    }
+
+    return `وزنه ${share} نقطة`;
+  }
+
+  extractAiShareInfo(completionBreakdown = [], task = {}, participantCount = 0) {
+    if (Array.isArray(completionBreakdown) && completionBreakdown.length > 0) {
+      const entry = completionBreakdown.find(item => Number.isFinite(Number(item?.aiWeightShare)) && Number(item.aiWeightShare) > 0);
+      if (entry) {
+        const share = Number(entry.aiWeightShare);
+        const totalFromEntry = Number(entry.aiWeightTotal);
+        const total = Number.isFinite(totalFromEntry) && totalFromEntry > 0
+          ? totalFromEntry
+          : Number(task?.ai_weight) || share;
+
+        return {
+          perAssignee: Number(share.toFixed(2)),
+          total: Number(total.toFixed(2))
+        };
+      }
+    }
+
+    const totalWeight = Number(task?.ai_weight);
+    if (participantCount > 1 && Number.isFinite(totalWeight) && totalWeight > 0) {
+      const perAssignee = Number((totalWeight / participantCount).toFixed(2));
+      return {
+        perAssignee,
+        total: Number(totalWeight.toFixed(2))
+      };
+    }
+
+    return null;
+  }
+
+  describeAiShare(outcome, task) {
+    const share = Number(outcome?.aiWeightShare);
+    if (!Number.isFinite(share) || share <= 0) {
+      return null;
+    }
+
+    const totalFromOutcome = Number(outcome?.aiWeightTotal);
+    const fallbackTotal = Number(task?.ai_weight);
+    const total = Number.isFinite(totalFromOutcome) && totalFromOutcome > 0
+      ? totalFromOutcome
+      : (Number.isFinite(fallbackTotal) && fallbackTotal > 0 ? fallbackTotal : null);
+
+    if (Number.isFinite(total) && Math.abs(total - share) > 0.01) {
+      return `${share} من أصل ${total} نقطة`;
+    }
+
+    return `${share} نقطة`;
   }
 
   async prepareAttachmentPreviews(attachments = []) {

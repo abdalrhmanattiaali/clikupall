@@ -1446,15 +1446,18 @@ async function handleCommentPosted(task, body, changedBy) {
   );
 
   const commentId = extractCommentId(body);
+  let commentDetailsSource = 'webhook_only';
 
-  if (commentId && (!commentText || attachments.length === 0)) {
+  if (commentId) {
     try {
       logger.info('Fetching comment details from ClickUp API', { commentId, taskId: task.id });
       const commentDetails = await enhancedClickUpService.fetchCommentDetails(commentId);
 
       if (commentDetails) {
-        if (!commentText && commentDetails.text) {
-          commentText = sanitizeCommentText(commentDetails.text);
+        commentDetailsSource = 'api_enriched';
+        const fetchedText = extractCommentText({ comment: commentDetails, payload: { comment: commentDetails } });
+        if (fetchedText) {
+          commentText = fetchedText;
         }
 
         if (Array.isArray(commentDetails.attachments) && commentDetails.attachments.length > 0) {
@@ -1486,14 +1489,16 @@ async function handleCommentPosted(task, body, changedBy) {
     assignees,
     creator,
     participants,
-    actor
+    actor,
+    contentSource: commentDetailsSource
   });
 
   logger.success('Comment posted event emitted', {
     taskId: task.id,
     commentId: commentId || 'unknown',
     textLength: commentText.length,
-    attachmentCount: attachments.length
+    attachmentCount: attachments.length,
+    contentSource: commentDetailsSource
   });
 }
 

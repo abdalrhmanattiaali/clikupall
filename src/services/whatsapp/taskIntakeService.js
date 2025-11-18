@@ -63,6 +63,7 @@ class WhatsAppTaskIntakeService {
       await this.cancelSession(session, 'تم بدء طلب جديد. أرسل وصف المهمة التي تريد إنشاءها.');
       session.stage = 'IDLE';
       session.attachments = [];
+      session.additionalNotes = [];
       session.blueprint = null;
       session.originalText = '';
       return;
@@ -74,9 +75,6 @@ class WhatsAppTaskIntakeService {
         break;
       case 'PROCESSING':
         await this.notifyStillProcessing(session);
-        break;
-      case 'AWAITING_ATTACHMENT_DECISION':
-        await this.handleAttachmentDecision(session, body);
         break;
       case 'COLLECTING_ATTACHMENTS':
         await this.handleAttachmentCommand(session, body);
@@ -105,6 +103,7 @@ class WhatsAppTaskIntakeService {
       blueprint: null,
       attachments: [],
       targetList: this.defaultList,
+      additionalNotes: [],
       updatedAt: Date.now()
     };
 
@@ -126,6 +125,7 @@ class WhatsAppTaskIntakeService {
     session.stage = 'PROCESSING';
     session.originalText = body;
     session.attachments = [];
+    session.additionalNotes = [];
     session.blueprint = null;
     session.targetList = this.defaultList;
 
@@ -138,12 +138,12 @@ class WhatsAppTaskIntakeService {
 
     session.blueprint = blueprint;
     session.targetList = findIntakeListByKey(blueprint.listKey) || this.defaultList;
-    session.stage = 'AWAITING_ATTACHMENT_DECISION';
+    session.stage = 'COLLECTING_ATTACHMENTS';
 
     const summary = this.buildBlueprintSummary(session);
     await whatsappService.sendMessage(session.chatId, summary);
 
-    let attachmentQuestion = '📎 هل ترغب في إضافة ملف أو صورة تدعم هذه المهمة؟\n- أرسل "نعم" ثم أرسل الملفات.\n- أرسل "لا" للمتابعة دون مرفقات.';
+    let attachmentQuestion = '📎 يمكنك الآن إرسال ملفات أو كتابة تعليمات إضافية تدعم المهمة.\n- أرسل الملفات مباشرة أو اكتب الملاحظات التي تريد إضافتها.\n- عند الانتهاء اكتب "تم" للمتابعة أو "إلغاء" للتراجع.';
     if (blueprint.attachmentsPrompt) {
       attachmentQuestion += `\n💡 اقتراح AI: ${blueprint.attachmentsPrompt}`;
     }
@@ -157,41 +157,30 @@ class WhatsAppTaskIntakeService {
     return `📋 *Task Blueprint Ready*\n• *Title:* ${blueprint.title}\n• *List:* ${session.targetList?.name || 'General'}\n• *Priority:* ${blueprint.priority}${due}\n• *Reason:* ${blueprint.listReason}`;
   }
 
-  async handleAttachmentDecision(session, body) {
-    if (this.isAffirmative(body)) {
-      session.stage = 'COLLECTING_ATTACHMENTS';
-      await whatsappService.sendMessage(session.chatId, '👍 أرسل الملفات الآن، وعند الانتهاء اكتب "تم" للمتابعة.');
-      return;
-    }
-
-    if (this.isNegative(body)) {
-      session.stage = 'AWAITING_CONFIRMATION';
-      await this.sendFinalPreview(session);
-      return;
-    }
-
-    await whatsappService.sendMessage(session.chatId, 'أرسل "نعم" لإضافة ملفات أو "لا" للمتابعة بدونها. يمكنك أيضاً كتابة "إلغاء" لإلغاء الطلب.');
-  }
-
   async handleAttachmentCommand(session, body) {
+    if (this.isCancelCommand(body)) {
+      await this.cancelSession(session, 'تم إلغاء إنشاء المهمة. أرسل وصفاً جديداً عند الحاجة.');
+      return;
+    }
+
+    if (this.isDoneCommand(body) || this.isNegative(body)) {
+      session.stage = 'AWAITING_CONFIRMATION';
+      await this.sendFinalPreview(session);
+      return;
+    }
+
     if (this.isAffirmative(body)) {
-      await whatsappService.sendMessage(session.chatId, 'ارسل الملفات مباشرة، وعند الانتهاء اكتب "تم".');
+      await whatsappService.sendMessage(session.chatId, 'أرسل الملفات أو الملاحظات الإضافية الآن، وعند الانتهاء اكتب "تم".');
       return;
     }
 
-    if (this.isNegative(body)) {
-      session.stage = 'AWAITING_CONFIRMATION';
-      await this.sendFinalPreview(session);
+    if (body) {
+      session.additionalNotes.push(body);
+      await whatsappService.sendMessage(session.chatId, '✍️ تم حفظ ملاحظتك. يمكنك إرسال المزيد أو كتابة "تم" للمتابعة.');
       return;
     }
 
-    if (this.isDoneCommand(body)) {
-      session.stage = 'AWAITING_CONFIRMATION';
-      await this.sendFinalPreview(session);
-      return;
-    }
-
-    await whatsappService.sendMessage(session.chatId, 'أرسل الملفات الآن أو اكتب "تم" بعد الانتهاء.');
+    await whatsappService.sendMessage(session.chatId, 'أرسل الملفات أو الملاحظات الآن، أو اكتب "تم" بعد الانتهاء.');
   }
 
   async handleConfirmation(session, body) {
@@ -229,7 +218,7 @@ class WhatsAppTaskIntakeService {
   }
 
   shouldCaptureAttachment(session) {
-    return ATTACHMENT_STAGES.includes(session.stage) || session.stage === 'AWAITING_ATTACHMENT_DECISION';
+    return ATTACHMENT_STAGES.includes(session.stage);
   }
 
   getExtension(mimetype = '') {
@@ -245,8 +234,11 @@ class WhatsAppTaskIntakeService {
     const attachmentsInfo = session.attachments.length > 0
       ? `\n• Attachments ready: ${session.attachments.length}`
       : '';
+    const notesInfo = session.additionalNotes.length > 0
+      ? `\n• Extra notes: ${session.additionalNotes.length}`
+      : '';
 
-    const message = `✅ جاهز لإنشاء المهمة التالية:\n• *Title:* ${session.blueprint.title}\n• *List:* ${session.targetList?.name}\n• *Assignee:* ${session.member.name}\n• *Due hint:* ${session.blueprint.dueDateHint || 'Not specified'}${attachmentsInfo}\n\nأرسل "تم" للإنشاء أو "إلغاء" للتراجع.`;
+    const message = `✅ جاهز لإنشاء المهمة التالية:\n• *Title:* ${session.blueprint.title}\n• *List:* ${session.targetList?.name}\n• *Assignee:* ${session.member.name}\n• *Due hint:* ${session.blueprint.dueDateHint || 'Not specified'}${attachmentsInfo}${notesInfo}\n\nأرسل "تم" للإنشاء أو "إلغاء" للتراجع.`;
 
     await whatsappService.sendMessage(session.chatId, message);
   }
@@ -288,6 +280,10 @@ class WhatsAppTaskIntakeService {
       `### Execution Path\n${blueprint.checklist.map((item, index) => `${index + 1}. ${item}`).join('\n')}`,
       `### Detailed Brief\n${blueprint.description}`
     ];
+
+    if (session.additionalNotes.length > 0) {
+      descriptionParts.push(`### Extra Notes\n${session.additionalNotes.map(note => `- ${note}`).join('\n')}`);
+    }
 
     const dueDate = this.resolveDueDate(blueprint.dueDateHint);
     const priority = this.mapPriority(blueprint.priority);

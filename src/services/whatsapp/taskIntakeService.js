@@ -152,11 +152,9 @@ class WhatsAppTaskIntakeService {
 
   buildBlueprintSummary(session) {
     const blueprint = session.blueprint;
-    const checklist = blueprint.checklist.map((item, index) => `${index + 1}. ${item}`).join('\n');
-    const requirements = blueprint.requirements.map(req => `- ${req}`).join('\n');
     const due = blueprint.dueDateHint ? `\n• *Due:* ${blueprint.dueDateHint}` : '';
 
-    return `📋 *Task Blueprint Ready*\n• *Title:* ${blueprint.title}\n• *List:* ${session.targetList?.name || 'General'}\n• *Priority:* ${blueprint.priority}${due}\n• *Reason:* ${blueprint.listReason}\n\n*Requirements*\n${requirements}\n\n*Checklist*\n${checklist}\n\n*Description Preview*\n${blueprint.description}`;
+    return `📋 *Task Blueprint Ready*\n• *Title:* ${blueprint.title}\n• *List:* ${session.targetList?.name || 'General'}\n• *Priority:* ${blueprint.priority}${due}\n• *Reason:* ${blueprint.listReason}`;
   }
 
   async handleAttachmentDecision(session, body) {

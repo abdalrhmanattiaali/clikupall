@@ -174,6 +174,7 @@ ENABLE_INSPIRATIONAL_CONTENT=true
 
 - [`GAMIFICATION_SYSTEM.md`](./GAMIFICATION_SYSTEM.md): دليل شامل لجميع عناصر نظام التلعيب (الأوسمة، الدروع، النقاط، السلاسل، ولوحات المتصدرين) مع شرح تفصيلي لكيفية عمل كل جزء.
 - [`FEATURE_TEST_LINKS.md`](./FEATURE_TEST_LINKS.md): سيناريوهات جاهزة وروابط مباشرة لاختبار الإشعارات، نظام التحفيز، تقارير AI، ولوحات المتصدرين.
+- [`NOTIFICATION_FULL_REFERENCE.md`](./NOTIFICATION_FULL_REFERENCE.md): مرجع شامل لكل أنواع الإشعارات، القنوات، المستلمين، وتوقيت الإرسال مع توضيح مصدر البيانات والذكاء الاصطناعي المستخدم.
 - [`WHATSAPP_TASK_INTAKE.md`](./WHATSAPP_TASK_INTAKE.md): كيفية إعداد متغيرات القوائم واختبار تحويل رسائل الواتساب إلى مهام ClickUp.
 - [`DAILY_NOTIFICATION_EXAMPLE.md`](./DAILY_NOTIFICATION_EXAMPLE.md): محاكاة يوم كامل تُظهر كل إشعار محتمل (خاص، مجموعة، تحفيز، AI، وتعليقات) مع رسائل فعلية يمكن مقارنتها أثناء الاختبار.
 - للتحقق من توافق الكود مع المستندات يمكنك تشغيل:

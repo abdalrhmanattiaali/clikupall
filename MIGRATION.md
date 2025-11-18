@@ -259,7 +259,7 @@ AI_PROVIDER=openai  # أو claude أو gemini
 
 # OpenAI (إذا كنت تستخدم ChatGPT)
 OPENAI_API_KEY=sk-proj-...
-OPENAI_MODEL=gpt-5
+OPENAI_MODEL=gpt-4o
 
 # Claude (إذا كنت تستخدم Claude)
 ANTHROPIC_API_KEY=sk-ant-api03-...

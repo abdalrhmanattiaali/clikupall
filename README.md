@@ -7,7 +7,7 @@
 ### 🤖 الذكاء الاصطناعي
 - **دعم متعدد لمزودي AI:**
   - Claude (Anthropic)
-  - ChatGPT (OpenAI) - GPT-5 (افتراضي)
+  - ChatGPT (OpenAI) - GPT-4o (افتراضي)
   - Google Gemini
 - **إشعارات ذكية:** توليد إشعارات سياقية تلقائياً
 - **مدرب شخصي AI:** نصائح مخصصة بناءً على الأداء
@@ -96,9 +96,9 @@ CLICKUP_TEAM_ID=your_team_id
 # AI Provider (claude | openai | gemini)
 AI_PROVIDER=openai
 
-# OpenAI (GPT-5)
+# OpenAI (GPT-4o)
 OPENAI_API_KEY=your_openai_key
-OPENAI_MODEL=gpt-5
+OPENAI_MODEL=gpt-4o
 
 # أو Claude
 ANTHROPIC_API_KEY=your_claude_key
@@ -122,7 +122,7 @@ npm start
 يمكنك التبديل بين مزودي AI عبر تغيير متغير `AI_PROVIDER` في `.env`:
 
 ```env
-AI_PROVIDER=openai     # ChatGPT (GPT-5)
+AI_PROVIDER=openai     # ChatGPT (GPT-4o)
 AI_PROVIDER=claude     # Claude (Anthropic)
 AI_PROVIDER=gemini     # Google Gemini
 ```

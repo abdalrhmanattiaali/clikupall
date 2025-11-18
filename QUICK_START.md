@@ -53,7 +53,7 @@ AI_PROVIDER=openai
 
 # OpenAI (إذا اخترت openai)
 OPENAI_API_KEY=sk-proj-YOUR_KEY_HERE
-OPENAI_MODEL=gpt-5
+OPENAI_MODEL=gpt-4o
 
 # أو Claude (إذا اخترت claude)
 # ANTHROPIC_API_KEY=sk-ant-api03-YOUR_KEY_HERE

@@ -18,7 +18,7 @@
 ### 2. خدمات الذكاء الاصطناعي (AI Services)
 - ✅ `src/services/ai/index.js` - AI Service Factory
 - ✅ `src/services/ai/claudeProvider.js` - Claude AI
-- ✅ `src/services/ai/openaiProvider.js` - OpenAI (GPT-5)
+- ✅ `src/services/ai/openaiProvider.js` - OpenAI (GPT-4o)
 - ✅ `src/services/ai/geminiProvider.js` - Google Gemini
 
 ### 3. الأدوات المساعدة (Utilities)

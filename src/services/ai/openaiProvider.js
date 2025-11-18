@@ -1,6 +1,6 @@
 /**
  * OpenAI Provider (ChatGPT)
- * مزود خدمة OpenAI - يدعم GPT-5 و GPT-4o و GPT-4 و GPT-3.5
+ * مزود خدمة OpenAI - يدعم GPT-4o و GPT-4 و GPT-3.5
  */
 
 import axios from 'axios';

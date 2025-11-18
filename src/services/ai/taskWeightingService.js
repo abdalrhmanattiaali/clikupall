@@ -55,7 +55,7 @@ class TaskWeightingService {
         inputHash,
         30 * 24 * 60 * 60 * 1000, // 30 days
         {
-          model_used: 'gpt-5',
+          model_used: 'gpt-4o',
           tokens_used: response.length
         }
       );

@@ -99,6 +99,7 @@ AI_PROVIDER=openai
 # OpenAI (GPT-4o)
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o
+OPENAI_FALLBACK_MODELS=gpt-4o-mini,gpt-4-turbo
 
 # أو Claude
 ANTHROPIC_API_KEY=your_claude_key
@@ -335,3 +336,5 @@ ISC License
 ---
 
 Made with ❤️ by ClickUp All Team
+يمكنك أيضاً تحديد ترتيب بدائل GPT-4 عبر المتغير `OPENAI_FALLBACK_MODELS` لضمان الاستمرار في حال عدم توفر النموذج الأساسي.
+

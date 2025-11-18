@@ -140,7 +140,7 @@ class TaskDraftingService {
       });
 
       const parsed = this.extractJson(response);
-      const normalized = this.normalizeBlueprint(parsed, requestText, listCatalog);
+      const normalized = await this.normalizeBlueprint(parsed, requestText, listCatalog);
       normalized.title = await this.ensureEnglishTitle(normalized.title, requestText);
 
       logger.success('AI task blueprint generated', {
@@ -155,7 +155,7 @@ class TaskDraftingService {
         error: error.message
       });
 
-      const fallback = this.fallbackBlueprint(requestText, member, listCatalog);
+      const fallback = await this.fallbackBlueprint(requestText, member, listCatalog);
       fallback.title = await this.ensureEnglishTitle(fallback.title, requestText);
       return fallback;
     }
@@ -286,7 +286,7 @@ Return an action-oriented English task title.`;
     throw new Error('AI response did not include JSON');
   }
 
-  normalizeBlueprint(blueprint, requestText, listCatalog) {
+  async normalizeBlueprint(blueprint, requestText, listCatalog) {
     const checklist = Array.isArray(blueprint?.checklist) && blueprint.checklist.length > 0
       ? blueprint.checklist
       : this.defaultChecklist;
@@ -295,7 +295,7 @@ Return an action-oriented English task title.`;
       ? blueprint.requirements
       : ['Confirm inputs referenced in the request'];
 
-    const listSelection = this.resolveListSelection(
+    const listSelection = await this.resolveListSelection(
       blueprint?.list_key,
       requestText,
       listCatalog,
@@ -316,10 +316,10 @@ Return an action-oriented English task title.`;
     };
   }
 
-  fallbackBlueprint(requestText, member, listCatalog) {
+  async fallbackBlueprint(requestText, member, listCatalog) {
     const checklist = this.defaultChecklist;
     const requirements = ['Clarify scope with requester'];
-    const listSelection = this.resolveListSelection(null, requestText, listCatalog);
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -349,7 +349,7 @@ Return an action-oriented English task title.`;
     return `### Objective\nTranslate the requester note into an actionable ClickUp task.\n\n### Source Note\n${requestText}\n\n### Requirements\n${requirementsList}\n\n### Execution Path\n${checklistList}\n\n### Success Criteria\n- Task acknowledged in ClickUp\n- Owner updates progress within the same day`;
   }
 
-  resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason) {
+  async resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason) {
     const catalog = this.resolveCatalog(listCatalog);
     const normalizedAiKey = listKeyFromAi?.toString().trim().toLowerCase();
 
@@ -363,6 +363,11 @@ Return an action-oriented English task title.`;
       }
     }
 
+    const aiFallbackSelection = await this.requestListSelectionFromAi(requestText, catalog);
+    if (aiFallbackSelection) {
+      return aiFallbackSelection;
+    }
+
     const heuristicMatch = this.inferListByKeywords(requestText, catalog);
     if (heuristicMatch) {
       return heuristicMatch;
@@ -373,6 +378,47 @@ Return an action-oriented English task title.`;
       listKey: defaultList.key,
       listReason: `Fallback to ${defaultList.name} due to missing AI selection.`
     };
+  }
+
+  async requestListSelectionFromAi(requestText, catalog) {
+    if (!requestText) {
+      return null;
+    }
+
+    try {
+      const systemPrompt = 'You only choose the most appropriate ClickUp list key for an Arabic WhatsApp task request. Respond with JSON.';
+      const catalogJson = JSON.stringify(
+        catalog.map(list => ({ key: list.key, name: list.name, description: list.description })),
+        null,
+        2
+      );
+
+      const userPrompt = `Incoming request (Arabic allowed): ${requestText}\nList catalog: ${catalogJson}\nReturn {"list_key":"key","list_reason":"why"}.`;
+
+      const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
+        temperature: 0.15,
+        maxTokens: 400
+      });
+
+      const parsed = this.extractJson(response);
+      const normalizedKey = parsed?.list_key?.toString().trim().toLowerCase();
+      if (!normalizedKey) {
+        return null;
+      }
+
+      const match = catalog.find(list => list.key.toLowerCase() === normalizedKey);
+      if (!match) {
+        return null;
+      }
+
+      return {
+        listKey: match.key,
+        listReason: parsed?.list_reason || `AI mapped the request to ${match.name}.`
+      };
+    } catch (error) {
+      logger.warn('AI list selection fallback failed', { error: error.message });
+      return null;
+    }
   }
 
   inferListByKeywords(requestText, catalog) {

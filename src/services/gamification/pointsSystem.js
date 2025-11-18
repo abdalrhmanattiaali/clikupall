@@ -54,6 +54,11 @@ export const MULTIPLIERS = {
  * Calculate base points for a task
  */
 export function calculateBasePoints(task) {
+  const aiWeight = Number(task?.ai_weight);
+  if (Number.isFinite(aiWeight) && aiWeight > 0) {
+    return aiWeight;
+  }
+
   let points = BASE_POINTS.TASK_NORMAL;
 
   // Check priority

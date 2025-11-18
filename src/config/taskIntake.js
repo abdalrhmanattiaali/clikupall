@@ -266,17 +266,23 @@ function parseListConfig() {
   }
 
   if (lists.length === 0) {
-    if (env.clickup.sampleListId) {
-      lists.push({
+    const defaults = DEFAULT_TASK_LISTS.map(list => ({ ...list }));
+
+    if (defaults.length === 0 && env.clickup.sampleListId) {
+      defaults.push({
         key: 'general',
         name: 'General Intake',
         listId: env.clickup.sampleListId,
         description: 'Fallback ClickUp list used when no mapping is provided.',
         isDefault: true
       });
-    } else {
-      return DEFAULT_TASK_LISTS.map(list => ({ ...list }));
     }
+
+    if (!defaults.some(list => list.isDefault) && defaults.length > 0) {
+      defaults[0].isDefault = true;
+    }
+
+    return defaults;
   }
 
   if (!lists.some(list => list.isDefault)) {

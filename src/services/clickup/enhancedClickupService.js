@@ -71,6 +71,10 @@ class EnhancedClickUpService {
       name: task.name || '',
       description: task.description || task.text_content || null,
       url: task.url || null,
+      parent: task.parent || null,
+      parent_id: task.parent || null,
+      parent_name: task.parent?.name || task.parent_name || null,
+      parent_url: task.parent ? `https://app.clickup.com/t/${task.parent}` : null,
 
       // Status
       status_name: task.status?.status || task.status?.type || null,
@@ -350,6 +354,41 @@ class EnhancedClickUpService {
         error: error.message
       });
       throw error;
+    }
+  }
+
+  /**
+   * Fetch comment details (text + attachments)
+   */
+  async fetchCommentDetails(commentId) {
+    if (!commentId) {
+      return null;
+    }
+
+    try {
+      const response = await axios.get(
+        `${this.baseURL}/comment/${commentId}`,
+        { headers: this.headers }
+      );
+
+      const comment = response.data?.comment || response.data;
+      if (!comment) {
+        return null;
+      }
+
+      return {
+        id: comment.id || commentId,
+        text: comment.comment_text || comment.text || comment.body || '',
+        user: comment.user || null,
+        attachments: Array.isArray(comment.attachments) ? comment.attachments : []
+      };
+    } catch (error) {
+      logger.warn('Failed to fetch comment details', {
+        commentId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return null;
     }
   }
 }

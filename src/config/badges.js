@@ -2,7 +2,7 @@
  * Badge Definitions
  * تعريف جميع الأوسمة والإنجازات في النظام
  *
- * 6 Categories with 50+ Badges Total
+ * 6 Categories with 40+ Badges Total
  */
 
 export const BADGE_CATEGORIES = {
@@ -403,6 +403,16 @@ export const CHALLENGE_BADGES = [
     requirement: { type: 'diverse_categories', value: 5 },
     points: 150,
     rarity: 'uncommon'
+  },
+  {
+    id: 'daily_champion',
+    name: '🏅 وسام بطل اليوم',
+    nameEn: 'Daily Champion',
+    description: 'أعلى عضو إنجازاً في اليوم (يُمنح آلياً)',
+    category: BADGE_CATEGORIES.CHALLENGES,
+    requirement: { type: 'manual_award', value: 'daily_champion' },
+    points: 120,
+    rarity: 'rare'
   }
 ];
 
@@ -473,7 +483,7 @@ export const ALL_BADGES = [
  */
 export const BADGE_RARITY = {
   common: { name: 'شائع', color: '#95a5a6', emoji: '⚪' },
-  uncommon: { name: 'غير شائع', color: '#27ae60', emoji: '🟢' },
+  uncommon: { name: 'مستوى مميز', color: '#27ae60', emoji: '🟢' },
   rare: { name: 'نادر', color: '#3498db', emoji: '🔵' },
   epic: { name: 'ملحمي', color: '#9b59b6', emoji: '🟣' },
   legendary: { name: 'أسطوري', color: '#f39c12', emoji: '🟡' }

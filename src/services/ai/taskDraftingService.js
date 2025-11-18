@@ -9,6 +9,124 @@ class TaskDraftingService {
       'Define deliverables and owners',
       'Share progress update'
     ];
+
+    this.listKeywordHints = [
+      {
+        key: 'clients_quotes',
+        reason: 'Detected quotation / pricing keywords from the request.',
+        keywords: ['عرض سعر', 'عروض اسعار', 'quote', 'pricing', 'تسعير']
+      },
+      {
+        key: 'clients_order_approvals',
+        reason: 'Order approval keywords detected (اعتماد طلب / approvals).',
+        keywords: ['اعتماد طلب', 'approve order', 'اعتماد اوردر', 'approval request']
+      },
+      {
+        key: 'clients_sample_approvals',
+        reason: 'Sample approval workflow detected.',
+        keywords: ['اعتماد عينات', 'sample approval', 'sample signoff']
+      },
+      {
+        key: 'orders_invoicing',
+        reason: 'Invoice / billing keywords detected.',
+        keywords: ['فاتورة', 'فواتير', 'invoice', 'billing']
+      },
+      {
+        key: 'orders_delivery',
+        reason: 'Delivery / shipping context detected.',
+        keywords: ['توصيل', 'delivery', 'شحن', 'courier']
+      },
+      {
+        key: 'orders_preparation',
+        reason: 'Order preparation context detected.',
+        keywords: ['تحضير', 'تجهيز', 'order prep', 'pack order']
+      },
+      {
+        key: 'orders_samples',
+        reason: 'Sample preparation request detected.',
+        keywords: ['تجهيز عينات', 'prepare samples', 'sample kit']
+      },
+      {
+        key: 'daily_procurement',
+        reason: 'Procurement / purchasing words detected.',
+        keywords: ['مشتريات', 'شراء', 'procurement', 'توريد']
+      },
+      {
+        key: 'daily_transport',
+        reason: 'Transportation / moving request detected.',
+        keywords: ['نقل', 'transport', 'move items', 'شحن داخلي']
+      },
+      {
+        key: 'daily_maintenance',
+        reason: 'Maintenance / repair request detected.',
+        keywords: ['صيانه', 'صيانة', 'maintenance', 'repair']
+      },
+      {
+        key: 'finance_transfers',
+        reason: 'Money transfer instructions detected.',
+        keywords: ['تحويل', 'حوالة', 'transfer', 'bank transfer']
+      },
+      {
+        key: 'finance_tax_returns',
+        reason: 'Tax filing references detected.',
+        keywords: ['ضريبة', 'tax', 'اقرار']
+      },
+      {
+        key: 'finance_receipts_review',
+        reason: 'Incoming payment review detected.',
+        keywords: ['استقبال اموال', 'تحصيل', 'receipts review']
+      },
+      {
+        key: 'finance_receivables_followup',
+        reason: 'Receivables / collection follow-up detected.',
+        keywords: ['مستحقات', 'collection', 'receivables']
+      },
+      {
+        key: 'opportunities_luna',
+        reason: 'LUNA opportunity mentioned in the request.',
+        keywords: ['لونا', 'luna']
+      },
+      {
+        key: 'opportunities_shera_pharma',
+        reason: 'Shera Pharma opportunity mentioned in the request.',
+        keywords: ['شيرا', 'shera']
+      },
+      {
+        key: 'opportunities_brand_company',
+        reason: 'Brand company opportunity detected.',
+        keywords: ['براند', 'brand company']
+      },
+      {
+        key: 'opportunities_integrated_cosmetics',
+        reason: 'Integrated cosmetics lead detected.',
+        keywords: ['المتكاملة', 'integrated cosmetics']
+      },
+      {
+        key: 'opportunities_milano_pharma',
+        reason: 'Milano Pharma lead mentioned.',
+        keywords: ['ميلانو', 'milano']
+      },
+      {
+        key: 'clients_followups',
+        reason: 'General client follow-up request detected.',
+        keywords: ['متابعة', 'follow up', 'متابعه طلب']
+      },
+      {
+        key: 'erp_updates',
+        reason: 'ERP / system update keywords detected.',
+        keywords: ['erp', 'نظام', 'system update', 'اوتوميشن']
+      },
+      {
+        key: 'erp_inventory',
+        reason: 'Inventory entry / withdrawal detected.',
+        keywords: ['مخزون', 'inventory', 'stock entry', 'سحب مخزون']
+      },
+      {
+        key: 'finance_purchase_entry',
+        reason: 'Purchase entry keywords detected.',
+        keywords: ['ادخال مشتريات', 'purchase entry', 'مشتريات']
+      }
+    ];
   }
 
   async generateBlueprint(requestText, { member, listCatalog }) {
@@ -22,7 +140,7 @@ class TaskDraftingService {
       });
 
       const parsed = this.extractJson(response);
-      const normalized = this.normalizeBlueprint(parsed, requestText);
+      const normalized = this.normalizeBlueprint(parsed, requestText, listCatalog);
       normalized.title = await this.ensureEnglishTitle(normalized.title, requestText);
 
       logger.success('AI task blueprint generated', {
@@ -37,7 +155,9 @@ class TaskDraftingService {
         error: error.message
       });
 
-      return this.fallbackBlueprint(requestText, member);
+      const fallback = this.fallbackBlueprint(requestText, member, listCatalog);
+      fallback.title = await this.ensureEnglishTitle(fallback.title, requestText);
+      return fallback;
     }
   }
 
@@ -166,7 +286,7 @@ Return an action-oriented English task title.`;
     throw new Error('AI response did not include JSON');
   }
 
-  normalizeBlueprint(blueprint, requestText) {
+  normalizeBlueprint(blueprint, requestText, listCatalog) {
     const checklist = Array.isArray(blueprint?.checklist) && blueprint.checklist.length > 0
       ? blueprint.checklist
       : this.defaultChecklist;
@@ -174,6 +294,13 @@ Return an action-oriented English task title.`;
     const requirements = Array.isArray(blueprint?.requirements) && blueprint.requirements.length > 0
       ? blueprint.requirements
       : ['Confirm inputs referenced in the request'];
+
+    const listSelection = this.resolveListSelection(
+      blueprint?.list_key,
+      requestText,
+      listCatalog,
+      blueprint?.list_reason
+    );
 
     return {
       title: blueprint?.task_title || this.generateTitleFromRequest(requestText),
@@ -183,15 +310,16 @@ Return an action-oriented English task title.`;
       checklist,
       priority: (blueprint?.priority || 'normal').toLowerCase(),
       dueDateHint: blueprint?.due_date_hint || '',
-      listKey: blueprint?.list_key || 'general',
-      listReason: blueprint?.list_reason || 'Defaulted to general inbox due to missing AI reasoning.',
+      listKey: listSelection.listKey,
+      listReason: listSelection.listReason,
       attachmentsPrompt: blueprint?.attachments_prompt || ''
     };
   }
 
-  fallbackBlueprint(requestText, member) {
+  fallbackBlueprint(requestText, member, listCatalog) {
     const checklist = this.defaultChecklist;
     const requirements = ['Clarify scope with requester'];
+    const listSelection = this.resolveListSelection(null, requestText, listCatalog);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -201,8 +329,8 @@ Return an action-oriented English task title.`;
       checklist,
       priority: 'normal',
       dueDateHint: '',
-      listKey: 'general',
-      listReason: 'Fallback general list due to AI failure.',
+      listKey: listSelection.listKey,
+      listReason: listSelection.listReason,
       attachmentsPrompt: ''
     };
   }
@@ -219,6 +347,86 @@ Return an action-oriented English task title.`;
     const checklistList = checklist.map((item, index) => `${index + 1}. ${item}`).join('\n');
 
     return `### Objective\nTranslate the requester note into an actionable ClickUp task.\n\n### Source Note\n${requestText}\n\n### Requirements\n${requirementsList}\n\n### Execution Path\n${checklistList}\n\n### Success Criteria\n- Task acknowledged in ClickUp\n- Owner updates progress within the same day`;
+  }
+
+  resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason) {
+    const catalog = this.resolveCatalog(listCatalog);
+    const normalizedAiKey = listKeyFromAi?.toString().trim().toLowerCase();
+
+    if (normalizedAiKey) {
+      const aiMatch = catalog.find(list => list.key.toLowerCase() === normalizedAiKey);
+      if (aiMatch) {
+        return {
+          listKey: aiMatch.key,
+          listReason: aiReason || `AI mapped the request to ${aiMatch.name}.`
+        };
+      }
+    }
+
+    const heuristicMatch = this.inferListByKeywords(requestText, catalog);
+    if (heuristicMatch) {
+      return heuristicMatch;
+    }
+
+    const defaultList = catalog.find(list => list.isDefault) || catalog[0];
+    return {
+      listKey: defaultList.key,
+      listReason: `Fallback to ${defaultList.name} due to missing AI selection.`
+    };
+  }
+
+  inferListByKeywords(requestText, catalog) {
+    if (!requestText) {
+      return null;
+    }
+
+    const normalizedRequest = this.normalizeText(requestText);
+    if (!normalizedRequest) {
+      return null;
+    }
+
+    for (const hint of this.listKeywordHints) {
+      if (!hint.keywords || hint.keywords.length === 0) {
+        continue;
+      }
+
+      const matched = hint.keywords.some(keyword => {
+        const normalizedKeyword = this.normalizeText(keyword);
+        return normalizedKeyword && normalizedRequest.includes(normalizedKeyword);
+      });
+
+      if (matched) {
+        const listMatch = catalog.find(list => list.key === hint.key) ||
+          catalog.find(list => this.normalizeText(list.name).includes(this.normalizeText(hint.keywords[0] || '')));
+
+        if (listMatch) {
+          return {
+            listKey: listMatch.key,
+            listReason: hint.reason || `Matched ${listMatch.name} keywords.`
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  resolveCatalog(listCatalog) {
+    if (Array.isArray(listCatalog) && listCatalog.length > 0) {
+      return listCatalog;
+    }
+    return TASK_INTAKE_LISTS;
+  }
+
+  normalizeText(text) {
+    if (!text) {
+      return '';
+    }
+    return text
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replace(/[\s]+/g, ' ');
   }
 }
 

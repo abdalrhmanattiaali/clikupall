@@ -574,14 +574,14 @@ ${aiMessage}`;
       );
 
       const tasksDigestBlock = teamTasksDigestForMessage
-        ? `\n🧾 *أبرز المهام اليوم:*\n${teamTasksDigestForMessage}\n`
+        ? `\n🧾 *أبرز المهام اليوم:*\n${teamTasksDigestForMessage}`
         : '';
 
       const finalMessage = `🔥 *ملخص الفريق (AI)*
 ${dataLines}
-${tasksDigestBlock}
+
 🧠 *تحليل اليوم:*
-${aiMessage}`;
+${aiMessage}${tasksDigestBlock}`;
 
       await whatsappService.sendToGroup(
         finalMessage,

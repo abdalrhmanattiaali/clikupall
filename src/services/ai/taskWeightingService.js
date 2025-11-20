@@ -97,7 +97,7 @@ class TaskWeightingService {
    * Build system prompt for task weighting
    */
   buildWeightingSystemPrompt() {
-    return `أنت خبير في تقييم المهام وتحليل التعقيد ومسارات التنفيذ. قبل أن تمنح أي نقاط، اسأل نفسك: *"ما الذي تحتاجه هذه المهمة لكي تُنجز؟"* وحدد الموارد، البيانات، الموافقات، والأدوات المطلوبة لإنجازها بنجاح. بعد فهم المتطلبات، قيّم صعوبة المسار بناءً على العوامل التالية.
+    return `أنت خبير في تقييم المهام وتحليل التعقيد ومسارات التنفيذ. قبل أن تمنح أي نقاط، اسأل نفسك: *"ما الذي تحتاجه هذه المهمة لكي تُنجز؟"* وحدد الموارد، البيانات، الموافقات، والأدوات المطلوبة لإنجازها بنجاح. بعد فهم المتطلبات، قسّم التنفيذ إلى خطوات مرقمة (منطقية ومتتابعة) ثم قيّم صعوبة المسار بناءً على العوامل التالية.
 
 **معايير التقييم (وزن إجمالي 0-100 نقطة):**
 
@@ -129,7 +129,8 @@ class TaskWeightingService {
    - اعتماديات معقدة أو مسار طويل متعدد الأطراف (10 نقاط)
 
 **تحليل المسار والمتطلبات:**
-- لخص المراحل/الخطوات الرئيسية للمهمة.
+- قسّم المهمة إلى خطوات مرتبة وواضحة (مثل: تحضير، تجهيز، تنفيذ، تسليم). اذكر عدد الخطوات الكلي.
+- لكل خطوة: اذكر العمل المطلوب، الجهد البدني أو الذهني، الوقت المتوقع بالدقائق، المهارات/الأدوات اللازمة، وأي مخاطر أو اعتماديات.
 - اذكر ما الذي تحتاجه المهمة لكي تُنجز (بيانات، صلاحيات، فرق أخرى، أدوات، ملفات، إلخ).
 - اربط نقاط الوزن بمدى صعوبة كل مرحلة في المسار.
 
@@ -145,6 +146,11 @@ class TaskWeightingService {
   "path_analysis": [
     {"stage": "التحضير", "needs": "جمع المتطلبات من الفريق", "risk": "متوسط"},
     {"stage": "التنفيذ", "needs": "تطوير التكامل", "risk": "مرتفع"}
+  ],
+  "steps_count": 4,
+  "steps": [
+    {"step": 1, "title": "التحضير", "actions": "جمع المتطلبات", "effort_minutes": 30, "skills": ["تواصل"], "risk": "منخفض"},
+    {"step": 2, "title": "التنفيذ", "actions": "تنفيذ الطلب", "effort_minutes": 180, "skills": ["تصنيع"], "risk": "متوسط"}
   ],
   "reasoning": "المهمة معقدة لأنها تتطلب...",
   "breakdown": {
@@ -217,7 +223,7 @@ class TaskWeightingService {
       prompt += `\n**المجلد:** ${task.folder_name}`;
     }
 
-    prompt += `\n\n*سؤال جوهري:* ما الذي تحتاجه هذه المهمة لكي تُنجز بالكامل؟ حدد الموارد أو الموافقات أو البيانات أو الأشخاص المطلوبين، ثم استخدم هذه الإجابة لتقدير المسار ومنح الوزن (0-100 نقطة).`;
+    prompt += `\n\n*سؤال جوهري:* ما الذي تحتاجه هذه المهمة لكي تُنجز بالكامل؟ حدد الموارد أو الموافقات أو البيانات أو الأشخاص المطلوبين، ثم استخدم هذه الإجابة لتقدير المسار ومنح الوزن (0-100 نقطة). حدد عدد الخطوات الكلي وفسّر كيف ينعكس الجهد (بدني/ذهني)، الوقت، التعقيد، وعدد المهارات على التقييم النهائي.`;
 
     return prompt;
   }
@@ -248,6 +254,13 @@ class TaskWeightingService {
       analysis.estimated_time = analysis.estimated_time || 60;
       analysis.skills_required = analysis.skills_required || [];
       analysis.dependencies = analysis.dependencies || [];
+      if (analysis.steps_count === undefined || analysis.steps_count === null) {
+        analysis.steps_count = Array.isArray(analysis.steps) ? analysis.steps.length : 0;
+      }
+      if (!Number.isFinite(analysis.steps_count)) {
+        analysis.steps_count = 0;
+      }
+      analysis.steps = analysis.steps || [];
 
       return analysis;
     } catch (error) {
@@ -263,6 +276,8 @@ class TaskWeightingService {
         estimated_time: 60,
         skills_required: [],
         dependencies: [],
+        steps_count: 0,
+        steps: [],
         reasoning: 'Failed to parse AI response - using default'
       };
     }

@@ -431,11 +431,14 @@ Return an action-oriented English task title.`;
       requirements.push('Ask for the customer name and PO/order reference if missing');
     }
 
+    const poHint = this.detectPurchaseOrderContext({ blueprint, requestText });
+
     const listSelection = await this.resolveListSelection(
       blueprint?.list_key,
       requestText,
       listCatalog,
-      blueprint?.list_reason
+      blueprint?.list_reason,
+      poHint
     );
 
     return {
@@ -458,7 +461,8 @@ Return an action-oriented English task title.`;
   async fallbackBlueprint(requestText, member, listCatalog) {
     const checklist = this.defaultChecklist;
     const requirements = ['Clarify scope with requester'];
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog);
+    const poHint = this.detectPurchaseOrderContext({ requestText });
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, poHint);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -486,7 +490,8 @@ Return an action-oriented English task title.`;
     ];
     const requirements = ['Confirm figures and document intent with requester'];
     const requestText = `[Image Intake] ${filename || 'Document'}`;
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog);
+    const poHint = this.detectPurchaseOrderContext({ requestText });
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, poHint);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -519,9 +524,19 @@ Return an action-oriented English task title.`;
     return `### Objective\nTranslate the requester note into an actionable ClickUp task.\n\n### Source Note\n${requestText}\n\n### Requirements\n${requirementsList}\n\n### Execution Path\n${checklistList}\n\n### Success Criteria\n- Task acknowledged in ClickUp\n- Owner updates progress within the same day`;
   }
 
-  async resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason) {
+  async resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason, forcedSelection) {
     const catalog = this.resolveCatalog(listCatalog);
     const normalizedAiKey = listKeyFromAi?.toString().trim().toLowerCase();
+
+    if (forcedSelection?.listKey) {
+      const forcedMatch = catalog.find(list => list.key.toLowerCase() === forcedSelection.listKey.toLowerCase());
+      if (forcedMatch) {
+        return {
+          listKey: forcedMatch.key,
+          listReason: forcedSelection.listReason || `Detected purchase order context, routing to ${forcedMatch.name}.`
+        };
+      }
+    }
 
     if (normalizedAiKey) {
       const aiMatch = catalog.find(list => list.key.toLowerCase() === normalizedAiKey);
@@ -632,6 +647,55 @@ Return an action-oriented English task title.`;
       return listCatalog;
     }
     return TASK_INTAKE_LISTS;
+  }
+
+  detectPurchaseOrderContext({ blueprint = {}, requestText = '' } = {}) {
+    const poNumber = (blueprint?.po_number || '').toString().trim();
+    if (poNumber) {
+      return {
+        listKey: 'clients_order_approvals',
+        listReason: `PO detected (${poNumber}) so routing to order approvals.`
+      };
+    }
+
+    const fields = [
+      blueprint?.task_title,
+      blueprint?.task_summary,
+      blueprint?.task_description,
+      blueprint?.list_reason,
+      requestText
+    ].filter(Boolean);
+
+    const normalizedFields = fields
+      .map(value => this.normalizeText(value))
+      .join(' | ');
+
+    if (!normalizedFields) {
+      return null;
+    }
+
+    const purchaseKeywords = [
+      'purchase order',
+      'po ',
+      'po#',
+      'po number',
+      'po no',
+      'po-',
+      'po_',
+      'طلب شراء',
+      'امر شراء',
+      'اعتماد طلب'
+    ];
+
+    const hasPoKeyword = purchaseKeywords.some(keyword => normalizedFields.includes(this.normalizeText(keyword)));
+    if (hasPoKeyword) {
+      return {
+        listKey: 'clients_order_approvals',
+        listReason: 'Detected purchase order context in the request.'
+      };
+    }
+
+    return null;
   }
 
   normalizeText(text) {

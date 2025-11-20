@@ -16,10 +16,11 @@ import leaderboardService from '../gamification/leaderboardService.js';
 import behavioralService from '../ai/behavioralService.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import { TEAM } from '../../config/team.js';
-import { TASK_STATUS } from '../../config/constants.js';
+import { isNonOpenStatus } from '../../config/constants.js';
 import { isToday, calculatePercentage, generateProgressBar } from '../../utils/helpers.js';
 import { formatTaskList } from '../../utils/formatters.js';
 import { shortenUrl } from '../../utils/urlShortener.js';
+import { getBadgeById } from '../../config/badges.js';
 
 class SchedulerService {
   constructor() {
@@ -199,7 +200,7 @@ class SchedulerService {
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const systemPrompt = `أنت مساعد تحفيزي صباحي. اكتب رسالة صباحية قصيرة (3-4 جمل) تحفيزية وإيجابية بالعربية.`;
 
@@ -251,10 +252,10 @@ class SchedulerService {
 
       try {
         const allTasks = await clickupService.getAllTasksForMember(member.id);
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const openTasks = allTasks.filter(t =>
-          !TASK_STATUS.NON_OPEN.includes(t.status?.status?.toLowerCase().trim())
+          !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
         const overdueTasks = openTasks.filter(t =>
@@ -359,30 +360,85 @@ class SchedulerService {
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
         const allTasks = await clickupService.getAllTasksForMember(member.id);
 
         const openTasks = allTasks.filter(t =>
-          !TASK_STATUS.NON_OPEN.includes(t.status?.status?.toLowerCase().trim())
+          !isNonOpenStatus(t.status?.status, t.status?.type)
         );
 
-        const systemPrompt = `أنت مساعد تحليلي. اكتب ملخصاً قصيراً (3-4 جمل) عن أداء اليوم بطريقة تحفيزية.`;
+        const todayTasks = Array.isArray(stats.todayTaskDetails)
+          ? stats.todayTaskDetails
+          : [];
+        const tasksHighlightBlock = this.buildTaskHighlightLines(todayTasks, {
+          numbered: true,
+          limit: 4,
+          showWhenEmpty: true
+        });
+        const aiTasksSummary = todayTasks.length > 0
+          ? todayTasks.slice(0, 4).map(task => this.describeTaskForHighlights(task)).join('\n')
+          : 'لا توجد مهام مكتملة اليوم';
 
-        const userMessage = `المستخدم: ${member.name}
-مهام اليوم المكتملة: ${stats.today}
-المهام المفتوحة: ${openTasks.length}
-إجمالي المهام: ${stats.total}
+        let badgeCount = 0;
+        let latestBadge = null;
 
-اكتب ملخصاً تحفيزياً قصيراً عن اليوم.`;
+        try {
+          const gamificationStats = await gamificationService.getUserStats(member.id);
+          const earnedBadges = Array.isArray(gamificationStats?.earnedBadges)
+            ? gamificationStats.earnedBadges
+            : [];
+          badgeCount = earnedBadges.length;
+          latestBadge = earnedBadges.length > 0 ? earnedBadges[earnedBadges.length - 1] : null;
+        } catch (error) {
+          logger.error('Failed to load gamification stats for daily summary', {
+            member: member.name,
+            error: error.message
+          });
+        }
+
+        const badgeLabel = latestBadge
+          ? getBadgeById(latestBadge)?.name || `${badgeCount} أوسمة`
+          : `${badgeCount} أوسمة`;
+
+        const statsBlock = [
+          `• المنجز اليوم: ${stats.today} مهمة`,
+          `• مفتوحة حالياً: ${openTasks.length} مهمة`,
+          `• إجمالي الإنجاز: ${stats.total} مهمة`,
+          `• وسوم وتحفيز: ${badgeLabel}`
+        ].join('\n');
+
+        const systemPrompt = `أنت محلل أداء شخصي. استعمل لغة عربية رسمية واضحة تعتمد على الأرقام وتقدم استنتاجات عملية مختصرة.
+- لا تستخدم عبارات عاطفية أو مجاملات.
+- اربط التعليقات مباشرة بمعطيات اليوم.
+- استشهد بأسماء المهام المنجزة عندما تكون متاحة وفسر ما تمثله.
+- اختم بجملة توصي بخطوة تالية قابلة للتنفيذ.`;
+
+        const userMessage = `بيانات المستخدم ${member.name}:
+${statsBlock}
+
+قائمة المهام المنجزة اليوم:
+${aiTasksSummary}
+
+أنتج فقرة موجزة (3 جمل كحد أقصى) تلخص وضع اليوم وتعطي توصية عملية تستند إلى البيانات والمهام المذكورة.`;
 
         const aiMessage = await aiService.generateCompletion(
           systemPrompt,
-          userMessage
+          userMessage,
+          { temperature: 0.35 }
         );
+
+        const finalMessage = `📊 *ملخص يومك*
+${statsBlock}
+
+📌 *أبرز مهام اليوم*
+${tasksHighlightBlock}
+
+🧠 *تحليل اليوم:*
+${aiMessage}`;
 
         await whatsappService.sendToUser(
           member.phone,
-          `📊 *ملخص يومك*\n\n${aiMessage}`
+          finalMessage
         );
 
         logger.debug('AI daily summary sent', { user: member.name });
@@ -398,6 +454,63 @@ class SchedulerService {
     }
   }
 
+  async collectTeamPerformanceSnapshot() {
+    const snapshot = [];
+
+    for (const member of TEAM) {
+      let stats = { today: 0, week: 0, total: 0 };
+      let openTasksCount = 0;
+      let badgeCount = 0;
+      let badgeNames = [];
+
+      try {
+        stats = await productivityRepo.getUserStats(member);
+      } catch (error) {
+        logger.error('Failed to read productivity stats for member', {
+          member: member.name,
+          error: error.message
+        });
+      }
+
+      try {
+        const allTasks = await clickupService.getAllTasksForMember(member.id, { includeClosed: false });
+        openTasksCount = (allTasks || []).filter(task => !isNonOpenStatus(task.status?.status, task.status?.type)).length;
+      } catch (error) {
+        logger.error('Failed to load ClickUp tasks for snapshot', {
+          member: member.name,
+          error: error.message
+        });
+      }
+
+      try {
+        const gamificationStats = await gamificationService.getUserStats(member.id);
+        const earnedBadges = Array.isArray(gamificationStats?.earnedBadges)
+          ? gamificationStats.earnedBadges
+          : [];
+        badgeCount = earnedBadges.length;
+        badgeNames = earnedBadges
+          .slice(-2)
+          .map(id => getBadgeById(id)?.name)
+          .filter(Boolean);
+      } catch (error) {
+        logger.error('Failed to load gamification stats for snapshot', {
+          member: member.name,
+          error: error.message
+        });
+      }
+
+      snapshot.push({
+        member,
+        stats,
+        openTasksCount,
+        badgeCount,
+        badgeNames
+      });
+    }
+
+    return snapshot;
+  }
+
   /**
    * Send AI group highlights
    */
@@ -409,30 +522,69 @@ class SchedulerService {
     logger.info('Sending AI group highlights');
 
     try {
-      const allStats = await productivityRepo.getAllUsersStats();
+      const snapshot = await this.collectTeamPerformanceSnapshot();
 
-      let lines = [];
-      let bestPerformer = { name: null, count: -1 };
-
-      for (const [userName, stats] of Object.entries(allStats)) {
-        lines.push(`@${userName}: ${stats.today} مهمة اليوم`);
-
-        if (stats.today > bestPerformer.count) {
-          bestPerformer = { name: userName, count: stats.today };
-        }
+      if (snapshot.length === 0) {
+        logger.warn('No team snapshot data available for AI highlights');
+        return;
       }
 
-      const systemPrompt = `أنت مساعد تحفيزي للفريق. اكتب ملخصاً قصيراً (3-4 جمل) عن إنجازات الفريق اليوم.`;
+      const lines = [];
+      let bestPerformer = { name: null, count: -1 };
+      let totalCompleted = 0;
+      let totalOpen = 0;
 
-      const userMessage = `إحصائيات الفريق اليوم:\n${lines.join('\n')}\n\nأفضل أداء: @${bestPerformer.name} (${bestPerformer.count} مهمة)\n\nاكتب ملخصاً تحفيزياً للفريق.`;
+      snapshot.forEach(entry => {
+        const today = entry.stats?.today || 0;
+        const openCount = entry.openTasksCount || 0;
+        const total = entry.stats?.total || 0;
+        const badgeCount = entry.badgeCount || 0;
+
+        totalCompleted += today;
+        totalOpen += openCount;
+
+        const condensedTasks = (entry.stats?.todayTaskDetails || [])
+          .slice(0, 2)
+          .map(task => this.describeTaskForHighlights(task))
+          .join('، ');
+        const taskContext = condensedTasks ? ` | مهام: ${condensedTasks}` : '';
+        lines.push(`@${entry.member.name}: ${today} منجزة، ${openCount} مفتوحة، إجمالي ${total}, أوسمة ${badgeCount}${taskContext}`);
+
+        if (today > bestPerformer.count) {
+          bestPerformer = { name: entry.member.name, count: today };
+        }
+      });
+
+      const dataLines = lines.join('\n');
+      const teamTasksDigestForMessage = this.buildTeamTasksDigest(snapshot, { perMemberLimit: 3, includeEmpty: false });
+      const teamTasksDigestForAi = this.buildTeamTasksDigest(snapshot, { perMemberLimit: 3, includeEmpty: true })
+        || 'لا توجد مهام منجزة اليوم.';
+
+      const systemPrompt = `أنت محلل بيانات لفريق عمليات. اكتب فقرة مركزة تعتمد على الأرقام التالية وتقدم قراءة احترافية بلا مبالغة عاطفية.
+- اربط الأرقام باتجاهات واضحة.
+- استنتج أين يوجد ضغط أو فجوات.
+- اختم بتوصية محددة لليوم التالي.`;
+
+      const userMessage = `بيانات اليوم:\n${dataLines}\n\nتفاصيل المهام:\n${teamTasksDigestForAi}\n\nإجمالي المنجز اليوم: ${totalCompleted}\nإجمالي المفتوح: ${totalOpen}\nأفضل أداء: @${bestPerformer.name || 'غير محدد'} (${bestPerformer.count > -1 ? bestPerformer.count : 0} مهمة).\n\nحلل الوضع وقدّم توصية دقيقة تستند إلى كل من الأرقام والمهام المذكورة.`;
 
       const aiMessage = await aiService.generateCompletion(
         systemPrompt,
-        userMessage
+        userMessage,
+        { temperature: 0.3 }
       );
 
+      const tasksDigestBlock = teamTasksDigestForMessage
+        ? `\n🧾 *أبرز المهام اليوم:*\n${teamTasksDigestForMessage}\n`
+        : '';
+
+      const finalMessage = `🔥 *ملخص الفريق (AI)*
+${dataLines}
+${tasksDigestBlock}
+🧠 *تحليل اليوم:*
+${aiMessage}`;
+
       await whatsappService.sendToGroup(
-        `🔥 *ملخص الفريق (AI)*\n\n${aiMessage}`,
+        finalMessage,
         { pin: true }
       );
 
@@ -455,24 +607,59 @@ class SchedulerService {
     logger.info('Sending daily group stats');
 
     try {
-      const allStats = await productivityRepo.getAllUsersStats();
+      const snapshot = await this.collectTeamPerformanceSnapshot();
 
-      let message = `📊 *إحصائيات الفريق اليومية*\n\n`;
-      let topPerformer = { name: null, count: -1 };
-
-      for (const [userName, stats] of Object.entries(allStats)) {
-        message += `@${userName}\n`;
-        message += `  ✅ اليوم: ${stats.today}\n`;
-        message += `  📊 الأسبوع: ${stats.week}\n`;
-        message += `  📦 الإجمالي: ${stats.total}\n\n`;
-
-        if (stats.today > topPerformer.count) {
-          topPerformer = { name: userName, count: stats.today };
-        }
+      if (snapshot.length === 0) {
+        logger.warn('No team snapshot data available for daily stats');
+        return;
       }
 
-      if (topPerformer.name) {
-        message += `\n🎖️ *نجم اليوم*: @${topPerformer.name} (${topPerformer.count} مهام)`;
+      let message = `📊 *إحصائيات الفريق اليومية*\n\n`;
+      let topCount = -1;
+      const topMembers = [];
+
+      snapshot.forEach(entry => {
+        const stats = entry.stats || { today: 0, total: 0, week: 0 };
+        const badgeList = entry.badgeNames?.filter(Boolean) || [];
+
+        message += `@${entry.member.name}\n`;
+        message += `  ✅ اليوم: ${stats.today} مهام\n`;
+        message += `  📂 مفتوحة: ${entry.openTasksCount} مهام\n`;
+        message += `  📊 هذا الأسبوع: ${stats.week} مهام\n`;
+        message += `  📦 الإجمالي: ${stats.total} مهام\n`;
+        message += `  🎖️ الأوسمة: ${entry.badgeCount}${badgeList.length > 0 ? ` (آخرها: ${badgeList.join('، ')})` : ''}\n\n`;
+        const taskHighlights = this.buildTaskHighlightLines(entry.stats?.todayTaskDetails || [], {
+          limit: 2,
+          bullet: '    • ',
+          showWhenEmpty: false
+        });
+        if (taskHighlights) {
+          message += `${taskHighlights}\n\n`;
+        }
+
+        if (stats.today > topCount) {
+          topCount = stats.today;
+          topMembers.length = 0;
+          topMembers.push(entry);
+        } else if (stats.today === topCount) {
+          topMembers.push(entry);
+        }
+      });
+
+      if (topMembers.length > 0 && topCount > 0) {
+        const championMentions = topMembers.map(entry => `@${entry.member.name}`).join('، ');
+        message += `🎖️ *وسام بطل اليوم*: ${championMentions} — ${topCount} ${topCount === 1 ? 'مهمة' : 'مهام'} منجزة\n`;
+
+        for (const entry of topMembers) {
+          await gamificationService.awardDailyChampion(entry.member.id, {
+            completedToday: entry.stats?.today || 0,
+            openTasks: entry.openTasksCount || 0
+          });
+        }
+
+        message += `📌 قراءة: ${championMentions} يقود${topMembers.length > 1 ? 'ون' : ''} وتيرة الإنجاز اليوم. حافظ${topMembers.length > 1 ? 'وا' : ''} على نفس المستوى وراقب${topMembers.length > 1 ? 'وا' : ''} المهام المفتوحة لتجنب تراكم جديد.`;
+      } else {
+        message += '🎯 لا يوجد متصدر واضح اليوم. ركزوا غداً على غلق المهام المفتوحة قبل إضافة أعمال جديدة.';
       }
 
       await whatsappService.sendToGroup(message, { pin: true });
@@ -496,22 +683,39 @@ class SchedulerService {
     logger.info('Sending AI goodnight message');
 
     try {
-      const allStats = await productivityRepo.getAllUsersStats();
+      const memberStats = [];
 
-      let totalToday = 0;
-      let bestPerformer = { name: null, count: -1 };
-
-      for (const [userName, stats] of Object.entries(allStats)) {
-        totalToday += stats.today;
-
-        if (stats.today > bestPerformer.count) {
-          bestPerformer = { name: userName, count: stats.today };
+      for (const member of TEAM) {
+        try {
+          const stats = await productivityRepo.getUserStats(member);
+          memberStats.push({ member, stats });
+        } catch (error) {
+          logger.error('Failed to read stats for goodnight summary', {
+            member: member.name,
+            error: error.message
+          });
+          memberStats.push({ member, stats: { today: 0 } });
         }
       }
 
+      let totalToday = 0;
+      let bestPerformer = { member: null, count: -1 };
+
+      memberStats.forEach(({ member, stats }) => {
+        const completedToday = stats?.today || 0;
+        totalToday += completedToday;
+
+        if (completedToday > bestPerformer.count) {
+          bestPerformer = { member, count: completedToday };
+        }
+      });
+
+      const bestName = bestPerformer.member ? `@${bestPerformer.member.name}` : 'غير محدد';
+      const bestCount = Math.max(bestPerformer.count, 0);
+
       const systemPrompt = `أنت مساعد تحفيزي. اكتب رسالة قصيرة (2-3 جمل) لنهاية اليوم بطريقة دافئة ومحفزة.`;
 
-      const userMessage = `إجمالي المهام المنجزة اليوم: ${totalToday}\nأفضل أداء: @${bestPerformer.name} (${bestPerformer.count} مهام)\n\nاكتب رسالة تصبح على خير محفزة.`;
+      const userMessage = `إجمالي المهام المنجزة اليوم: ${totalToday}\nأفضل أداء: ${bestName} (${bestCount} مهام)\n\nاكتب رسالة تصبح على خير محفزة.`;
 
       const aiMessage = await aiService.generateCompletion(
         systemPrompt,
@@ -549,7 +753,7 @@ class SchedulerService {
       const member = TEAM[i];
 
       try {
-        const stats = await productivityRepo.getUserStats(member.name);
+        const stats = await productivityRepo.getUserStats(member);
 
         const systemPrompt = `أنت مساعد تحليلي أسبوعي. اكتب ملخصاً قصيراً (4-5 جمل) عن الأسبوع مع نصائح للأسبوع القادم.`;
 
@@ -695,6 +899,69 @@ class SchedulerService {
       'very_complex': 'معقدة جداً'
     };
     return translations[complexity] || 'متوسطة';
+  }
+
+  describeTaskForHighlights(task) {
+    if (!task) {
+      return 'مهمة بدون اسم';
+    }
+
+    const baseName = task.name || 'مهمة بدون اسم';
+    const parentContext = task.parentName ? ` ← ${task.parentName}` : '';
+    const aiWeight = Number(task.aiWeight);
+    const weightLabel = Number.isFinite(aiWeight) && aiWeight > 0 ? ` — ${aiWeight} نقطة` : '';
+
+    return `${baseName}${parentContext}${weightLabel}`;
+  }
+
+  buildTaskHighlightLines(tasks = [], options = {}) {
+    const {
+      limit = 3,
+      bullet = '• ',
+      numbered = false,
+      showWhenEmpty = true
+    } = options;
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return showWhenEmpty ? `${bullet}لا توجد مهام مكتملة اليوم` : '';
+    }
+
+    const selected = tasks.slice(0, limit);
+
+    return selected
+      .map((task, index) => {
+        const prefix = numbered ? `${index + 1}. ` : bullet;
+        return `${prefix}${this.describeTaskForHighlights(task)}`;
+      })
+      .join('\n');
+  }
+
+  buildTeamTasksDigest(snapshot = [], options = {}) {
+    if (!Array.isArray(snapshot) || snapshot.length === 0) {
+      return '';
+    }
+
+    const {
+      perMemberLimit = 3,
+      includeEmpty = false
+    } = options;
+
+    const lines = [];
+
+    snapshot.forEach(entry => {
+      const tasks = entry.stats?.todayTaskDetails || [];
+      if (tasks.length === 0 && !includeEmpty) {
+        return;
+      }
+
+      const label = tasks.length > 0
+        ? tasks.slice(0, perMemberLimit).map(task => this.describeTaskForHighlights(task)).join('، ')
+        : 'لا توجد مهام مكتملة اليوم';
+
+      lines.push(`@${entry.member.name}: ${label}`);
+    });
+
+    return lines.join('\n');
   }
 
   /**

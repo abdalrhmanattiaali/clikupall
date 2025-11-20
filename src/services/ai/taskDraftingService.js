@@ -19,12 +19,12 @@ class TaskDraftingService {
       {
         key: 'clients_order_approvals',
         reason: 'Order approval keywords detected (اعتماد طلب / approvals).',
-        keywords: ['اعتماد طلب', 'approve order', 'اعتماد اوردر', 'approval request']
+        keywords: ['اعتماد طلب', 'approve order', 'اعتماد اوردر', 'approval request', 'purchase order', 'امر شراء', 'طلب شراء']
       },
       {
         key: 'clients_sample_approvals',
         reason: 'Sample approval workflow detected.',
-        keywords: ['اعتماد عينات', 'sample approval', 'sample signoff']
+        keywords: ['اعتماد عينات', 'sample approval', 'sample signoff', 'قائمة اصناف', 'items list']
       },
       {
         key: 'orders_invoicing',
@@ -221,6 +221,9 @@ You MUST answer with valid JSON only.
 Every task title and description must be written in English and follow a crisp template.
 Break the description into structured sections (Objective, Requirements, Execution Path, Success Criteria).
 Before proposing anything, deduce what the task needs in order to be completed (resources, approvals, files, people).
+Assume every request comes from a customer; treat the supplier as the customer party for context.
+If the request looks like a list of items without a PO/order reference, treat it as a *sample approval* request and pick the matching list key.
+Capture the customer name; if it is missing or unclear, set needs_customer_name=true so the assistant can ask for it explicitly.
 
 Respond with this JSON schema:
 {
@@ -233,6 +236,9 @@ Respond with this JSON schema:
   "due_date_hint": "ISO date or human window",
   "list_key": "one of the provided list keys",
   "list_reason": "why this list fits",
+  "customer_name": "name if available",
+  "po_number": "order reference if available",
+  "needs_customer_name": true,
   "attachments_prompt": "what files to request if any"
 }
 Ensure checklist items cover the entire execution path and never leave the list_key empty.`;
@@ -261,6 +267,9 @@ Ensure checklist items cover the entire execution path and never leave the list_
     return `Requester: ${member?.name || 'Unknown member'}
 Phone hint: ${member?.phone || 'N/A'}
 Raw Arabic request: """${requestText}"""
+Assume the requester is the customer placing an order or request.
+If no customer name is visible, mark needs_customer_name=true so the user can be asked for it in Arabic.
+If the text is only a list of items and there is no PO/order reference, route to the sample approval list.
 
 Available ClickUp lists:
 ${listsDescription}
@@ -276,6 +285,9 @@ Decide which list should receive the task and generate the JSON response.`;
 You MUST answer with valid JSON only.
 Images will often be purchase orders, sales orders, invoices, quotations, or delivery notes.
 Extract the document intent (purchase vs sales), customer name, supplier, PO number, total, and due/shipping dates when visible.
+Assume the sender is the supplier fulfilling a customer request; always keep the customer context in the response.
+If the document is only an item list with no PO/order reference, classify it as a sample approval request and choose the sample approval list.
+If the customer name is missing or unclear, set needs_customer_name=true so the workflow can ask for it in Arabic.
 Every task title and description must be written in English and include the customer name and PO/Order number when present.
 Break the description into sections (Objective, Key Details, Requirements, Execution Path, Success Criteria).
 Ensure checklist items cover fulfilling or processing the document (validate items, confirm quantities, arrange delivery, update systems).
@@ -291,6 +303,9 @@ Respond with this JSON schema:
   "due_date_hint": "ISO date or human window",
   "list_key": "one of the provided list keys",
   "list_reason": "why this list fits",
+  "customer_name": "name if available",
+  "po_number": "order reference if available",
+  "needs_customer_name": true,
   "attachments_prompt": "what files to request if any"
 }
 Always pick the most relevant list_key; never leave it empty.`;
@@ -319,13 +334,14 @@ Always pick the most relevant list_key; never leave it empty.`;
     return `Requester: ${member?.name || 'Unknown member'}
 Phone hint: ${member?.phone || 'N/A'}
 Document info: ${fileInfo}
+Assume the document comes from a customer request. If the customer name is missing, set needs_customer_name=true so you can ask for it later in Arabic.
+If you see only items without a PO/order reference, choose the sample approval list.
 
 Available ClickUp lists:
 ${listsDescription}
 
 Full list catalog (JSON):
 ${listsJson}
-
 An image of the document is attached separately. Use it to detect the document type, customer name, PO number, totals, and generate the JSON response.`;
   }
 
@@ -407,6 +423,14 @@ Return an action-oriented English task title.`;
       ? blueprint.requirements
       : ['Confirm inputs referenced in the request'];
 
+    const customerName = (blueprint?.customer_name || '').toString().trim();
+    const poNumber = (blueprint?.po_number || '').toString().trim();
+    const needsCustomerName = Boolean(blueprint?.needs_customer_name) || !customerName;
+
+    if (needsCustomerName && !requirements.some(req => req.toLowerCase().includes('customer'))) {
+      requirements.push('Ask for the customer name and PO/order reference if missing');
+    }
+
     const listSelection = await this.resolveListSelection(
       blueprint?.list_key,
       requestText,
@@ -424,7 +448,10 @@ Return an action-oriented English task title.`;
       dueDateHint: blueprint?.due_date_hint || '',
       listKey: listSelection.listKey,
       listReason: listSelection.listReason,
-      attachmentsPrompt: blueprint?.attachments_prompt || ''
+      attachmentsPrompt: blueprint?.attachments_prompt || '',
+      customerName,
+      poNumber,
+      needsCustomerName
     };
   }
 
@@ -443,7 +470,10 @@ Return an action-oriented English task title.`;
       dueDateHint: '',
       listKey: listSelection.listKey,
       listReason: listSelection.listReason,
-      attachmentsPrompt: ''
+      attachmentsPrompt: '',
+      customerName: '',
+      poNumber: '',
+      needsCustomerName: true
     };
   }
 
@@ -468,7 +498,10 @@ Return an action-oriented English task title.`;
       dueDateHint: '',
       listKey: listSelection.listKey,
       listReason: listSelection.listReason || 'Fallback general list after vision failure.',
-      attachmentsPrompt: 'Attach the document image if not already linked.'
+      attachmentsPrompt: 'Attach the document image if not already linked.',
+      customerName: '',
+      poNumber: '',
+      needsCustomerName: true
     };
   }
 
@@ -530,7 +563,7 @@ Return an action-oriented English task title.`;
         2
       );
 
-      const userPrompt = `Incoming request (Arabic allowed): ${requestText}\nList catalog: ${catalogJson}\nReturn {"list_key":"key","list_reason":"why"}.`;
+      const userPrompt = `Incoming request (Arabic allowed): ${requestText}\nAssume the requester is a customer sending an order/approval. Prefer customer lists (approvals, samples, follow ups). If you only see item lists without a PO, pick the sample approval list.\nList catalog: ${catalogJson}\nReturn {"list_key":"key","list_reason":"why"}.`;
 
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
         temperature: 0.15,

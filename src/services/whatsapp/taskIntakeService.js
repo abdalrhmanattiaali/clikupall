@@ -159,6 +159,9 @@ class WhatsAppTaskIntakeService {
 
     const summary = this.buildBlueprintSummary(session);
     await whatsappService.sendMessage(session.chatId, summary);
+    if (blueprint.needsCustomerName) {
+      await whatsappService.sendMessage(session.chatId, '❓ اسم العميل غير واضح، اكتب اسم العميل أو رقم الطلب لتأكيده.');
+    }
     await this.promptForAssignee(session);
   }
 
@@ -172,11 +175,11 @@ class WhatsAppTaskIntakeService {
       session.targetList = this.defaultList;
       session.selectedAssignees = [];
 
-      await whatsappService.sendMessage(session.chatId, '🖼️ تم استلام الصورة، جاري قراءة المستند وتحويله إلى مهمة واضحة...');
+      await whatsappService.sendMessage(session.chatId, '🖼️ تم استلام الملف/الصورة، جاري قراءة المستند وتحويله إلى مهمة واضحة...');
 
       const media = await message.downloadMedia();
       if (!media) {
-        await whatsappService.sendMessage(session.chatId, '⚠️ لم أستطع تحميل الصورة. أعد الإرسال أو استخدم وصفاً نصياً.');
+        await whatsappService.sendMessage(session.chatId, '⚠️ لم أستطع تحميل الملف. أعد الإرسال أو استخدم وصفاً نصياً.');
         session.stage = 'IDLE';
         return;
       }
@@ -200,6 +203,9 @@ class WhatsAppTaskIntakeService {
 
       const summary = this.buildBlueprintSummary(session);
       await whatsappService.sendMessage(session.chatId, summary);
+      if (blueprint.needsCustomerName) {
+        await whatsappService.sendMessage(session.chatId, '❓ اسم العميل غير واضح في المستند، اكتب اسم العميل أو رقم الـ PO لو متاح.');
+      }
       await this.promptForAssignee(session);
     } catch (error) {
       logger.error('Failed to start image blueprint', { error: error.message });

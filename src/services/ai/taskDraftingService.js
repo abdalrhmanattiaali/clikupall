@@ -12,6 +12,11 @@ class TaskDraftingService {
 
     this.listKeywordHints = [
       {
+        key: 'finance_receipts_review',
+        reason: 'Detected an incoming money transfer / receipt that needs review.',
+        keywords: ['تم تحويل', 'وصل تحويل', 'تحويل مبلغ', 'ايصال تحويل', 'سند تحويل', 'bank transfer receipt']
+      },
+      {
         key: 'clients_quotes',
         reason: 'Detected quotation / pricing keywords from the request.',
         keywords: ['عرض سعر', 'عروض اسعار', 'quote', 'pricing', 'تسعير']
@@ -223,6 +228,7 @@ Break the description into structured sections (Objective, Requirements, Executi
 Before proposing anything, deduce what the task needs in order to be completed (resources, approvals, files, people).
 Assume every request comes from a customer; treat the supplier as the customer party for context.
 If the request looks like a list of items without a PO/order reference, treat it as a *sample approval* request and pick the matching list key.
+If you see a bank transfer receipt or proof of incoming funds, route it to the incoming receipts review list.
 Capture the customer name; if it is missing or unclear, set needs_customer_name=true so the assistant can ask for it explicitly.
 
 Respond with this JSON schema:
@@ -284,6 +290,7 @@ Decide which list should receive the task and generate the JSON response.`;
     return `You are a senior operations coordinator who converts base64-encoded business documents into ClickUp tasks.
 You MUST answer with valid JSON only.
 Images will often be purchase orders, sales orders, invoices, quotations, or delivery notes.
+Images may also include bank transfer receipts or payment confirmations. If you see those, send the task to the incoming receipts review list.
 Extract the document intent (purchase vs sales), customer name, supplier, PO number, total, and due/shipping dates when visible.
 Assume the sender is the supplier fulfilling a customer request; always keep the customer context in the response.
 If the document is only an item list with no PO/order reference, classify it as a sample approval request and choose the sample approval list.
@@ -336,6 +343,7 @@ Phone hint: ${member?.phone || 'N/A'}
 Document info: ${fileInfo}
 Assume the document comes from a customer request. If the customer name is missing, set needs_customer_name=true so you can ask for it later in Arabic.
 If you see only items without a PO/order reference, choose the sample approval list.
+If you detect a bank transfer receipt or payment confirmation, choose the incoming receipts review list.
 
 Available ClickUp lists:
 ${listsDescription}
@@ -432,13 +440,14 @@ Return an action-oriented English task title.`;
     }
 
     const poHint = this.detectPurchaseOrderContext({ blueprint, requestText });
+    const transferHint = this.detectIncomingTransferContext({ blueprint, requestText });
 
     const listSelection = await this.resolveListSelection(
       blueprint?.list_key,
       requestText,
       listCatalog,
       blueprint?.list_reason,
-      poHint
+      transferHint || poHint
     );
 
     return {
@@ -462,7 +471,8 @@ Return an action-oriented English task title.`;
     const checklist = this.defaultChecklist;
     const requirements = ['Clarify scope with requester'];
     const poHint = this.detectPurchaseOrderContext({ requestText });
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, poHint);
+    const transferHint = this.detectIncomingTransferContext({ requestText });
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -491,7 +501,8 @@ Return an action-oriented English task title.`;
     const requirements = ['Confirm figures and document intent with requester'];
     const requestText = `[Image Intake] ${filename || 'Document'}`;
     const poHint = this.detectPurchaseOrderContext({ requestText });
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, poHint);
+    const transferHint = this.detectIncomingTransferContext({ requestText });
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -578,7 +589,7 @@ Return an action-oriented English task title.`;
         2
       );
 
-      const userPrompt = `Incoming request (Arabic allowed): ${requestText}\nAssume the requester is a customer sending an order/approval. Prefer customer lists (approvals, samples, follow ups). If you only see item lists without a PO, pick the sample approval list.\nList catalog: ${catalogJson}\nReturn {"list_key":"key","list_reason":"why"}.`;
+      const userPrompt = `Incoming request (Arabic allowed): ${requestText}\nAssume the requester is a customer sending an order/approval. Prefer customer lists (approvals, samples, follow ups). If you only see item lists without a PO, pick the sample approval list. If you see a bank transfer receipt or payment confirmation, pick the incoming receipts review list.\nList catalog: ${catalogJson}\nReturn {"list_key":"key","list_reason":"why"}.`;
 
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
         temperature: 0.15,
@@ -692,6 +703,45 @@ Return an action-oriented English task title.`;
       return {
         listKey: 'clients_order_approvals',
         listReason: 'Detected purchase order context in the request.'
+      };
+    }
+
+    return null;
+  }
+
+  detectIncomingTransferContext({ blueprint = {}, requestText = '' } = {}) {
+    const fields = [
+      blueprint?.task_title,
+      blueprint?.task_summary,
+      blueprint?.task_description,
+      blueprint?.list_reason,
+      requestText
+    ].filter(Boolean);
+
+    const normalized = fields
+      .map(value => this.normalizeText(value))
+      .join(' | ');
+
+    if (!normalized) {
+      return null;
+    }
+
+    const transferKeywords = [
+      'تم تحويل',
+      'تحويل مبلغ',
+      'ايصال تحويل',
+      'سند تحويل',
+      'وصل تحويل',
+      'transfer receipt',
+      'payment receipt',
+      'bank transfer'
+    ];
+
+    const hasTransferReceipt = transferKeywords.some(keyword => normalized.includes(this.normalizeText(keyword)));
+    if (hasTransferReceipt) {
+      return {
+        listKey: 'finance_receipts_review',
+        listReason: 'Detected incoming bank transfer receipt; route to receipts review.'
       };
     }
 

@@ -411,7 +411,9 @@ class WhatsAppTaskIntakeService {
       }
 
       const payload = this.buildClickUpPayload(session);
-      const createdTask = await clickupService.createTask(listId, payload);
+      const createdTask = await clickupService.createTask(listId, payload, {
+        asUserId: session.member?.id
+      });
 
       for (const attachment of session.attachments) {
         await clickupService.addAttachment(createdTask.id, attachment.buffer, attachment.filename);

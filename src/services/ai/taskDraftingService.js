@@ -129,7 +129,7 @@ class TaskDraftingService {
     ];
   }
 
-  async generateBlueprint(requestText, { member, listCatalog }) {
+  async generateBlueprint(requestText, { member, listCatalog } = {}) {
     try {
       const systemPrompt = this.buildSystemPrompt();
       const userPrompt = this.buildUserPrompt(requestText, member, listCatalog);
@@ -157,6 +157,54 @@ class TaskDraftingService {
 
       const fallback = await this.fallbackBlueprint(requestText, member, listCatalog);
       fallback.title = await this.ensureEnglishTitle(fallback.title, requestText);
+      return fallback;
+    }
+  }
+
+  async generateBlueprintFromImage(attachment, { member = {}, listCatalog } = {}) {
+    const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
+      ? listCatalog
+      : TASK_INTAKE_LISTS;
+
+    const base64 = attachment?.buffer ? attachment.buffer.toString('base64') : '';
+    const safeFilename = attachment?.filename || 'document.jpg';
+    const fileInfo = `Name: ${safeFilename} | Mime: ${attachment?.mimetype || 'unknown'}`;
+
+    try {
+      const systemPrompt = this.buildImageSystemPrompt();
+      const userPrompt = this.buildImageUserPrompt({
+        member,
+        fileInfo,
+        base64,
+        listCatalog: catalog
+      });
+
+      const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
+        temperature: 0.35,
+        maxTokens: 2200
+      });
+
+      const parsed = this.extractJson(response);
+      const normalized = await this.normalizeBlueprint(parsed, safeFilename, catalog);
+      normalized.title = await this.ensureEnglishTitle(normalized.title, safeFilename);
+      normalized.source = 'image';
+
+      logger.success('AI image blueprint generated', {
+        requester: member?.name,
+        listKey: normalized.listKey,
+        priority: normalized.priority,
+        filename: safeFilename
+      });
+
+      return normalized;
+    } catch (error) {
+      logger.error('Failed to generate AI image blueprint', {
+        error: error.message,
+        filename: safeFilename
+      });
+
+      const fallback = await this.fallbackBlueprintFromImage(safeFilename, member, catalog);
+      fallback.source = 'image';
       return fallback;
     }
   }
@@ -215,6 +263,69 @@ Full list catalog (JSON):
 ${listsJson}
 
 Decide which list should receive the task and generate the JSON response.`;
+  }
+
+  buildImageSystemPrompt() {
+    return `You are a senior operations coordinator who converts base64-encoded business documents into ClickUp tasks.
+You MUST answer with valid JSON only.
+Images will often be purchase orders, sales orders, invoices, quotations, or delivery notes.
+Extract the document intent (purchase vs sales), customer name, supplier, PO number, total, and due/shipping dates when visible.
+Every task title and description must be written in English and include the customer name and PO/Order number when present.
+Break the description into sections (Objective, Key Details, Requirements, Execution Path, Success Criteria).
+Ensure checklist items cover fulfilling or processing the document (validate items, confirm quantities, arrange delivery, update systems).
+
+Respond with this JSON schema:
+{
+  "task_title": "string",
+  "task_summary": "one sentence english summary",
+  "task_description": "multi-line english markdown with headers and extracted doc facts",
+  "requirements": ["resource or dependency"],
+  "checklist": ["actionable english step"],
+  "priority": "urgent | high | normal | low",
+  "due_date_hint": "ISO date or human window",
+  "list_key": "one of the provided list keys",
+  "list_reason": "why this list fits",
+  "attachments_prompt": "what files to request if any"
+}
+Always pick the most relevant list_key; never leave it empty.`;
+  }
+
+  buildImageUserPrompt({ member, fileInfo, base64, listCatalog }) {
+    const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
+      ? listCatalog
+      : TASK_INTAKE_LISTS;
+
+    const listsDescription = catalog
+      .map(list => `- key: ${list.key} | name: ${list.name} | focus: ${list.description}`)
+      .join('\n');
+
+    const listsJson = JSON.stringify(
+      catalog.map(list => ({
+        key: list.key,
+        name: list.name,
+        description: list.description,
+        listId: list.listId
+      })),
+      null,
+      2
+    );
+
+    const trimmedImage = base64?.length > 8000 ? `${base64.slice(0, 8000)}...` : (base64 || '');
+
+    return `Requester: ${member?.name || 'Unknown member'}
+Phone hint: ${member?.phone || 'N/A'}
+Document info: ${fileInfo}
+
+Available ClickUp lists:
+${listsDescription}
+
+Full list catalog (JSON):
+${listsJson}
+
+Base64-encoded image (may be truncated):
+${trimmedImage}
+
+Detect the document type, customer name, PO number, and generate the JSON response.`;
   }
 
   async ensureEnglishTitle(title, requestText) {
@@ -332,6 +443,31 @@ Return an action-oriented English task title.`;
       listKey: listSelection.listKey,
       listReason: listSelection.listReason,
       attachmentsPrompt: ''
+    };
+  }
+
+  async fallbackBlueprintFromImage(filename, member, listCatalog) {
+    const checklist = [
+      'Extract key fields from the document',
+      'Confirm supplier/customer details',
+      'Record PO/Invoice number and totals',
+      'Share next steps with the owner'
+    ];
+    const requirements = ['Confirm figures and document intent with requester'];
+    const requestText = `[Image Intake] ${filename || 'Document'}`;
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog);
+
+    return {
+      title: this.generateTitleFromRequest(requestText, member),
+      summary: 'Draft task derived from document image without AI JSON',
+      description: this.buildFallbackDescription(requestText, requirements, checklist),
+      requirements,
+      checklist,
+      priority: 'normal',
+      dueDateHint: '',
+      listKey: listSelection.listKey,
+      listReason: listSelection.listReason || 'Fallback general list after vision failure.',
+      attachmentsPrompt: 'Attach the document image if not already linked.'
     };
   }
 

@@ -39,6 +39,11 @@ class WhatsAppTaskIntakeService {
     const session = this.getSession(payload.chatId, member);
     session.updatedAt = Date.now();
 
+    if (message.hasMedia && session.stage === 'IDLE') {
+      await this.startImageBlueprint(session, message);
+      return;
+    }
+
     if (message.hasMedia && this.shouldCaptureAttachment(session)) {
       await this.captureAttachment(session, message);
       return;
@@ -157,6 +162,52 @@ class WhatsAppTaskIntakeService {
     await this.promptForAssignee(session);
   }
 
+  async startImageBlueprint(session, message) {
+    try {
+      session.stage = 'PROCESSING';
+      session.originalText = message?.caption || '[Image intake]';
+      session.attachments = [];
+      session.additionalNotes = [];
+      session.blueprint = null;
+      session.targetList = this.defaultList;
+      session.selectedAssignees = [];
+
+      await whatsappService.sendMessage(session.chatId, '🖼️ تم استلام الصورة، جاري قراءة المستند وتحويله إلى مهمة واضحة...');
+
+      const media = await message.downloadMedia();
+      if (!media) {
+        await whatsappService.sendMessage(session.chatId, '⚠️ لم أستطع تحميل الصورة. أعد الإرسال أو استخدم وصفاً نصياً.');
+        session.stage = 'IDLE';
+        return;
+      }
+
+      const attachment = {
+        filename: media.filename || `document-${Date.now()}.${this.getExtension(media.mimetype)}`,
+        mimetype: media.mimetype,
+        buffer: Buffer.from(media.data, 'base64')
+      };
+
+      session.attachments = [attachment];
+
+      const blueprint = await taskDraftingService.generateBlueprintFromImage(attachment, {
+        member: session.member,
+        listCatalog: TASK_INTAKE_LISTS
+      });
+
+      session.blueprint = blueprint;
+      session.targetList = findIntakeListByKey(blueprint.listKey) || this.defaultList;
+      session.stage = 'SELECTING_ASSIGNEE';
+
+      const summary = this.buildBlueprintSummary(session);
+      await whatsappService.sendMessage(session.chatId, summary);
+      await this.promptForAssignee(session);
+    } catch (error) {
+      logger.error('Failed to start image blueprint', { error: error.message });
+      session.stage = 'IDLE';
+      await whatsappService.sendMessage(session.chatId, '❌ حدث خطأ أثناء تحليل الصورة. أرسل وصفاً نصياً أو حاول مرة أخرى.');
+    }
+  }
+
   buildBlueprintSummary(session) {
     const blueprint = session.blueprint;
     const due = blueprint.dueDateHint ? `\n• *Due:* ${blueprint.dueDateHint}` : '';
@@ -244,8 +295,16 @@ class WhatsAppTaskIntakeService {
     }
 
     session.selectedAssignees = selected;
+    const assigneeNames = selected.map(m => m.name).join(', ');
+    await whatsappService.sendMessage(session.chatId, `✅ تم اختيار المكلفين: ${assigneeNames}`);
+
+    if (this.shouldSkipAttachmentStep(session)) {
+      session.stage = 'AWAITING_CONFIRMATION';
+      await this.sendFinalPreview(session);
+      return;
+    }
+
     session.stage = 'COLLECTING_ATTACHMENTS';
-    await whatsappService.sendMessage(session.chatId, `✅ تم اختيار المكلفين: ${selected.map(m => m.name).join(', ')}`);
     await this.sendAttachmentPrompt(session);
   }
 
@@ -285,6 +344,10 @@ class WhatsAppTaskIntakeService {
 
   shouldCaptureAttachment(session) {
     return ATTACHMENT_STAGES.includes(session.stage);
+  }
+
+  shouldSkipAttachmentStep(session) {
+    return session?.blueprint?.source === 'image';
   }
 
   getExtension(mimetype = '') {

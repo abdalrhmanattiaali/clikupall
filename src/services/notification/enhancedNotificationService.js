@@ -721,7 +721,8 @@ class EnhancedNotificationService {
       userName = 'غير معروف',
       attachments = [],
       participants = [],
-      actor = null
+      actor = null,
+      commentedAt = null
     } = data;
 
     logger.info('💬 Processing TASK_COMMENT_POSTED event', {
@@ -733,7 +734,7 @@ class EnhancedNotificationService {
     });
 
     const preparedAttachments = await this.prepareAttachmentPreviews(attachments);
-    const groupMessage = await this.buildCommentGroupMessage(task, userName, commentText, preparedAttachments, participants);
+    const groupMessage = await this.buildCommentGroupMessage(task, userName, commentText, preparedAttachments, participants, commentedAt);
 
     this.addToQueue({
       type: 'comment_posted',
@@ -761,7 +762,8 @@ class EnhancedNotificationService {
         userName,
         commentText,
         preparedAttachments,
-        actor
+        actor,
+        commentedAt
       );
 
       await this.sendImmediateNotification(dmMessage, 'user', recipient.phone);
@@ -980,14 +982,15 @@ class EnhancedNotificationService {
     return message;
   }
 
-  async buildCommentGroupMessage(task, userName, commentText, attachments, participants = []) {
+  async buildCommentGroupMessage(task, userName, commentText, attachments, participants = [], commentedAt = null) {
     const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('comment_group', {
       task,
       userName,
       commentText,
       attachments,
-      participants
+      participants,
+      commentedAt
     });
 
     if (aiMessage) {
@@ -1005,6 +1008,9 @@ class EnhancedNotificationService {
     message += `*بواسطة:* ${userName}\n`;
     message += `*المعنيون:* ${participantNames}\n`;
     message += `*نوع المحتوى:* ${contentHint}\n`;
+    if (commentedAt) {
+      message += `*الوقت:* ${this.formatTimestamp(commentedAt)}\n`;
+    }
 
     if (trimmedText) {
       message += `\n"${this.truncateText(trimmedText, 220)}"\n`;
@@ -1029,7 +1035,7 @@ class EnhancedNotificationService {
     return message;
   }
 
-  async buildCommentDirectMessage(task, recipient, userName, commentText, attachments, actor = null) {
+  async buildCommentDirectMessage(task, recipient, userName, commentText, attachments, actor = null, commentedAt = null) {
     const taskLabel = this.formatTaskNameWithParent(task);
     const aiMessage = await this.generateNotificationWithTemplate('comment_dm', {
       task,
@@ -1037,7 +1043,8 @@ class EnhancedNotificationService {
       userName,
       commentText,
       attachments,
-      actor
+      actor,
+      commentedAt
     });
 
     if (aiMessage) {
@@ -1058,6 +1065,9 @@ class EnhancedNotificationService {
     message += `*من:* ${isActor ? 'أنت' : userName}\n`;
     message += `*إلى:* ${recipient.name}\n`;
     message += `*نوع المحتوى:* ${contentHint}\n`;
+    if (commentedAt) {
+      message += `*الوقت:* ${this.formatTimestamp(commentedAt)}\n`;
+    }
 
     if (trimmedText) {
       message += `\n${this.truncateText(trimmedText, 220)}\n`;
@@ -2012,6 +2022,23 @@ class EnhancedNotificationService {
     }
 
     return 'إشعار تلقائي لكل المشاركين النشطين.';
+  }
+
+  formatTimestamp(timestamp) {
+    if (!timestamp) {
+      return 'غير متوفر';
+    }
+
+    const date = new Date(parseInt(timestamp, 10));
+    if (Number.isNaN(date.getTime())) {
+      return 'غير متوفر';
+    }
+
+    return date.toLocaleString('ar-EG', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      hour12: false
+    });
   }
 
   truncateText(text, limit = 200) {
@@ -3287,6 +3314,7 @@ class EnhancedNotificationService {
         msg += `content_hint: ${contentHint}\n`;
         msg += `comment_preview: ${preview}\n`;
         msg += `attachments_block: ${this.buildAttachmentTemplateBlock(attachments)}\n`;
+        msg += `comment_time: ${this.formatTimestamp(commentedAt)}\n`;
         msg += `url: ${task?.url || 'غير متوفر'}\n`;
 
         break;
@@ -3309,6 +3337,7 @@ class EnhancedNotificationService {
         msg += `comment_preview: ${preview}\n`;
         msg += `attachments_block: ${this.buildAttachmentTemplateBlock(attachments)}\n`;
         msg += `role_hint: ${roleHint}\n`;
+        msg += `comment_time: ${this.formatTimestamp(commentedAt)}\n`;
         msg += `url: ${task?.url || 'غير متوفر'}\n`;
 
         break;

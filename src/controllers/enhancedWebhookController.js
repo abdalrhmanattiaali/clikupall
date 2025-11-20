@@ -1617,6 +1617,7 @@ async function handleCommentPosted(task, body, changedBy) {
 
   const commentId = extractCommentId(body);
   let commentDetailsSource = 'webhook_only';
+  let commentedAt = extractCommentTimestamp(body);
 
   if (commentId) {
     try {
@@ -1636,6 +1637,10 @@ async function handleCommentPosted(task, body, changedBy) {
             commentDetails.attachments
           );
         }
+
+        if (!commentedAt && commentDetails.date) {
+          commentedAt = parseInt(commentDetails.date, 10) || null;
+        }
       }
     } catch (error) {
       logger.warn('Failed to load comment details from API', {
@@ -1643,6 +1648,28 @@ async function handleCommentPosted(task, body, changedBy) {
         taskId: task.id,
         error: error.message
       });
+    }
+  }
+
+  if (!commentText || attachments.length === 0) {
+    const latestComment = await enhancedClickUpService.fetchLatestTaskComment(task.id);
+    if (latestComment) {
+      commentDetailsSource = commentDetailsSource === 'webhook_only' ? 'task_comments_fallback' : commentDetailsSource;
+      const fetchedText = extractCommentText({ comment: latestComment, payload: { comment: latestComment } });
+      if (fetchedText) {
+        commentText = fetchedText;
+      }
+
+      if (Array.isArray(latestComment.attachments) && latestComment.attachments.length > 0) {
+        attachments = gatherCommentAttachments(
+          attachments,
+          latestComment.attachments
+        );
+      }
+
+      if (!commentedAt && latestComment.date) {
+        commentedAt = parseInt(latestComment.date, 10) || null;
+      }
     }
   }
 
@@ -1660,6 +1687,7 @@ async function handleCommentPosted(task, body, changedBy) {
     creator,
     participants,
     actor,
+    commentedAt,
     contentSource: commentDetailsSource
   });
 
@@ -1668,6 +1696,7 @@ async function handleCommentPosted(task, body, changedBy) {
     commentId: commentId || 'unknown',
     textLength: commentText.length,
     attachmentCount: attachments.length,
+    commentedAt,
     contentSource: commentDetailsSource
   });
 }
@@ -1734,6 +1763,38 @@ function extractCommentId(body = {}) {
     const normalized = normalizeIdCandidate(candidate);
     if (normalized) {
       return normalized;
+    }
+  }
+
+  return null;
+}
+
+function extractCommentTimestamp(body = {}) {
+  const candidates = [
+    body.comment?.date,
+    body.comment?.date_created,
+    body.comment?.timestamp,
+    body.payload?.comment?.date,
+    body.payload?.comment?.date_created,
+    body.payload?.comment?.timestamp,
+    body.history_items?.[0]?.comment?.date,
+    body.history_items?.[0]?.comment?.date_created,
+    body.history_items?.[0]?.comment?.timestamp,
+    body.history_items?.[0]?.value?.date,
+    body.history_items?.[0]?.value?.date_created,
+    body.history_items?.[0]?.value?.timestamp,
+    body.history_items?.[0]?.value?.after?.comment?.date,
+    body.history_items?.[0]?.value?.after?.comment?.date_created,
+    body.history_items?.[0]?.value?.after?.comment?.timestamp
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeIdCandidate(candidate);
+    if (normalized) {
+      const parsed = parseInt(normalized, 10);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
     }
   }
 

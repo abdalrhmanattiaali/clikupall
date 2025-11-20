@@ -378,13 +378,64 @@ class EnhancedClickUpService {
 
       return {
         id: comment.id || commentId,
-        text: comment.comment_text || comment.text || comment.body || '',
+        text: comment.comment_text || comment.text || comment.text_content || comment.body || '',
         user: comment.user || null,
-        attachments: Array.isArray(comment.attachments) ? comment.attachments : []
+        date: comment.date || comment.date_created || comment.timestamp || null,
+        attachments: Array.isArray(comment.attachments) ? comment.attachments : (comment.attachment || [])
       };
     } catch (error) {
       logger.warn('Failed to fetch comment details', {
         commentId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Fetch the latest comment on a task (fallback when webhook payload is missing)
+   */
+  async fetchLatestTaskComment(taskId) {
+    if (!taskId) {
+      return null;
+    }
+
+    try {
+      const response = await axios.get(
+        `${this.baseURL}/task/${taskId}/comment`,
+        {
+          headers: this.headers,
+          params: {
+            custom_task_ids: true,
+            team_id: env.clickup.teamId
+          }
+        }
+      );
+
+      const comments = response.data?.comments || response.data || [];
+      if (!Array.isArray(comments) || comments.length === 0) {
+        return null;
+      }
+
+      const sorted = [...comments].sort((a, b) => {
+        const aDate = parseInt(a.date || a.date_created || a.timestamp || 0, 10);
+        const bDate = parseInt(b.date || b.date_created || b.timestamp || 0, 10);
+        return bDate - aDate;
+      });
+
+      const latest = sorted[0];
+
+      return {
+        id: latest.id,
+        text: latest.comment_text || latest.text || latest.text_content || latest.body || '',
+        user: latest.user || null,
+        date: latest.date || latest.date_created || latest.timestamp || null,
+        attachments: Array.isArray(latest.attachments) ? latest.attachments : (latest.attachment || [])
+      };
+    } catch (error) {
+      logger.warn('Failed to fetch latest task comment', {
+        taskId,
         error: error.message,
         response: error.response?.data
       });

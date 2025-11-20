@@ -135,6 +135,54 @@ class OpenAIProvider extends AIProviderInterface {
   }
 
   /**
+   * Generate vision completion using OpenAI (supports base64/data URLs)
+   */
+  async generateVisionCompletion(systemPrompt, userMessage, images = [], options = {}) {
+    return this.withModelFallback(async (model) => {
+      const imageContents = (images || [])
+        .filter(Boolean)
+        .map((image) => {
+          if (typeof image === 'string') {
+            return { type: 'image_url', image_url: { url: image, detail: 'high' } };
+          }
+
+          if (image.url) {
+            return { type: 'image_url', image_url: { url: image.url, detail: image.detail || 'high' } };
+          }
+
+          return null;
+        })
+        .filter(Boolean);
+
+      const userContent = [
+        { type: 'text', text: userMessage },
+        ...imageContents
+      ];
+
+      const response = await axios.post(
+        this.apiUrl,
+        {
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent }
+          ],
+          max_tokens: options.maxTokens || 900,
+          temperature: options.temperature ?? 0.35
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      return response.data?.choices?.[0]?.message?.content?.trim() || '';
+    });
+  }
+
+  /**
    * Stream chat response (for future use)
    */
   async streamChat(messages, onChunk, options = {}) {

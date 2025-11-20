@@ -167,22 +167,28 @@ class TaskDraftingService {
       : TASK_INTAKE_LISTS;
 
     const base64 = attachment?.buffer ? attachment.buffer.toString('base64') : '';
+    const mimeType = attachment?.mimetype || 'image/jpeg';
     const safeFilename = attachment?.filename || 'document.jpg';
-    const fileInfo = `Name: ${safeFilename} | Mime: ${attachment?.mimetype || 'unknown'}`;
+    const fileInfo = `Name: ${safeFilename} | Mime: ${mimeType}`;
+    const imageDataUrl = base64 ? `data:${mimeType};base64,${base64}` : '';
 
     try {
       const systemPrompt = this.buildImageSystemPrompt();
       const userPrompt = this.buildImageUserPrompt({
         member,
         fileInfo,
-        base64,
         listCatalog: catalog
       });
 
-      const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
-        temperature: 0.35,
-        maxTokens: 2200
-      });
+      const response = imageDataUrl
+        ? await aiService.generateVisionCompletion(systemPrompt, userPrompt, [imageDataUrl], {
+          temperature: 0.35,
+          maxTokens: 2200
+        })
+        : await aiService.generateCompletion(systemPrompt, `${userPrompt}\n[Image bytes unavailable for vision]`, {
+          temperature: 0.35,
+          maxTokens: 2200
+        });
 
       const parsed = this.extractJson(response);
       const normalized = await this.normalizeBlueprint(parsed, safeFilename, catalog);
@@ -290,7 +296,7 @@ Respond with this JSON schema:
 Always pick the most relevant list_key; never leave it empty.`;
   }
 
-  buildImageUserPrompt({ member, fileInfo, base64, listCatalog }) {
+  buildImageUserPrompt({ member, fileInfo, listCatalog }) {
     const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
       ? listCatalog
       : TASK_INTAKE_LISTS;
@@ -310,8 +316,6 @@ Always pick the most relevant list_key; never leave it empty.`;
       2
     );
 
-    const trimmedImage = base64?.length > 8000 ? `${base64.slice(0, 8000)}...` : (base64 || '');
-
     return `Requester: ${member?.name || 'Unknown member'}
 Phone hint: ${member?.phone || 'N/A'}
 Document info: ${fileInfo}
@@ -322,10 +326,7 @@ ${listsDescription}
 Full list catalog (JSON):
 ${listsJson}
 
-Base64-encoded image (may be truncated):
-${trimmedImage}
-
-Detect the document type, customer name, PO number, and generate the JSON response.`;
+An image of the document is attached separately. Use it to detect the document type, customer name, PO number, totals, and generate the JSON response.`;
   }
 
   async ensureEnglishTitle(title, requestText) {

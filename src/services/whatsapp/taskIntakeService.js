@@ -439,8 +439,9 @@ class WhatsAppTaskIntakeService {
     const phoneDigits = normalizePhone(member?.phone || session.chatId);
     const requesterName = member?.name || 'غير معروف';
     const requesterPhone = phoneDigits ? `+${phoneDigits}` : 'غير متوفر';
+    const requesterId = member?.id ? member.id : 'غير معروف';
     descriptionParts.push(
-      `### WhatsApp Intake Metadata\n- Requester: ${requesterName}\n- Phone: ${requesterPhone}\n- Chat: ${session.chatId}`
+      `### WhatsApp Intake Metadata\n- Requester: ${requesterName}\n- Phone: ${requesterPhone}\n- Chat: ${session.chatId}\n- ClickUp User ID: ${requesterId}`
     );
 
     if (session.additionalNotes.length > 0) {
@@ -455,7 +456,8 @@ class WhatsAppTaskIntakeService {
       description: descriptionParts.join('\n\n'),
       assignees: this.getAssigneeIds(session, member),
       notify_all: true,
-      tags: this.buildTags(member, session.chatId)
+      tags: this.buildTags(member, session.chatId),
+      followers: this.getFollowerIds(member)
     };
 
     if (dueDate) {
@@ -474,6 +476,9 @@ class WhatsAppTaskIntakeService {
     const phoneDigits = normalizePhone(member?.phone || chatId);
     if (phoneDigits) {
       tags.push(`from-${phoneDigits}`);
+      if (member?.id) {
+        tags.push(`from-id-${member.id}`);
+      }
     }
 
     const normalizedName = (member?.name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -482,6 +487,14 @@ class WhatsAppTaskIntakeService {
     }
 
     return tags;
+  }
+
+  getFollowerIds(member) {
+    if (!member?.id) {
+      return [];
+    }
+
+    return [member.id];
   }
 
   formatAssigneeNames(session) {

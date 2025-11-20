@@ -436,6 +436,13 @@ class WhatsAppTaskIntakeService {
       `### Detailed Brief\n${blueprint.description}`
     ];
 
+    const phoneDigits = normalizePhone(member?.phone || session.chatId);
+    const requesterName = member?.name || 'غير معروف';
+    const requesterPhone = phoneDigits ? `+${phoneDigits}` : 'غير متوفر';
+    descriptionParts.push(
+      `### WhatsApp Intake Metadata\n- Requester: ${requesterName}\n- Phone: ${requesterPhone}\n- Chat: ${session.chatId}`
+    );
+
     if (session.additionalNotes.length > 0) {
       descriptionParts.push(`### Extra Notes\n${session.additionalNotes.map(note => `- ${note}`).join('\n')}`);
     }
@@ -447,7 +454,8 @@ class WhatsAppTaskIntakeService {
       name: blueprint.title,
       description: descriptionParts.join('\n\n'),
       assignees: this.getAssigneeIds(session, member),
-      notify_all: true
+      notify_all: true,
+      tags: this.buildTags(member, session.chatId)
     };
 
     if (dueDate) {
@@ -459,6 +467,21 @@ class WhatsAppTaskIntakeService {
     }
 
     return payload;
+  }
+
+  buildTags(member, chatId) {
+    const tags = ['whatsapp-intake'];
+    const phoneDigits = normalizePhone(member?.phone || chatId);
+    if (phoneDigits) {
+      tags.push(`from-${phoneDigits}`);
+    }
+
+    const normalizedName = (member?.name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (normalizedName) {
+      tags.push(`from-${normalizedName}`);
+    }
+
+    return tags;
   }
 
   formatAssigneeNames(session) {

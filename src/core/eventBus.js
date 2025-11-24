@@ -127,7 +127,10 @@ export const EVENTS = {
   APP_READY: 'app:ready',
   APP_ERROR: 'app:error',
   WHATSAPP_READY: 'whatsapp:ready',
-  WHATSAPP_DISCONNECTED: 'whatsapp:disconnected'
+  WHATSAPP_DISCONNECTED: 'whatsapp:disconnected',
+
+  // WhatsApp inbound events
+  WHATSAPP_MESSAGE_RECEIVED: 'whatsapp:message_received'
 };
 
 // Create singleton instance

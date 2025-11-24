@@ -88,7 +88,10 @@ export const env = {
     },
     openai: {
       apiKey: process.env.OPENAI_API_KEY,
-      model: process.env.OPENAI_MODEL || 'gpt-4o'
+      model: process.env.OPENAI_MODEL || 'gpt-4o',
+      fallbackModels: process.env.OPENAI_FALLBACK_MODELS
+        ? process.env.OPENAI_FALLBACK_MODELS.split(',').map(model => model.trim()).filter(Boolean)
+        : ['gpt-4o-mini', 'gpt-4-turbo']
     },
     gemini: {
       apiKey: process.env.GEMINI_API_KEY,

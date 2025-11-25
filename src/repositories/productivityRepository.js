@@ -29,8 +29,33 @@ class ProductivityRepository extends BaseRepository {
     try {
       const data = await this.read(false);
 
+      const aliasMap = new Map();
+      const addAlias = (value) => {
+        if (value === undefined || value === null) {
+          return;
+        }
+
+        const normalized = String(value).trim();
+        if (!normalized) {
+          return;
+        }
+
+        if (!aliasMap.has(normalized)) {
+          aliasMap.set(normalized, normalized);
+        }
+      };
+
+      if (Array.isArray(entry.userAliases)) {
+        entry.userAliases.forEach(addAlias);
+      }
+
+      if (entry.userId) {
+        addAlias(entry.userId);
+      }
+
       const newEntry = {
         ...entry,
+        userAliases: Array.from(aliasMap.values()),
         timestamp: entry.timestamp || Date.now()
       };
 
@@ -56,9 +81,18 @@ class ProductivityRepository extends BaseRepository {
    * @param {string} userId - User ID
    * @returns {Promise<Array>} User entries
    */
-  async getUserEntries(userId) {
+  async getUserEntries(userIdentifier, options = {}) {
+    const { includeSubtasks = true } = options;
+    const identifiers = this.buildIdentifierSet(userIdentifier);
+
+    if (!identifiers || identifiers.size === 0) {
+      return [];
+    }
+
     const data = await this.read();
-    return data.filter(entry => entry.userId === userId);
+    const matched = data.filter(entry => this.entryMatchesIdentifiers(entry, identifiers));
+
+    return includeSubtasks ? matched : matched.filter(entry => !entry.isSubtask);
   }
 
   /**
@@ -66,8 +100,8 @@ class ProductivityRepository extends BaseRepository {
    * @param {string} userId - User ID
    * @returns {Promise<Array>} Today's entries
    */
-  async getUserTodayEntries(userId) {
-    const entries = await this.getUserEntries(userId);
+  async getUserTodayEntries(userIdentifier, options = {}) {
+    const entries = await this.getUserEntries(userIdentifier, options);
     return entries.filter(entry => isToday(entry.timestamp));
   }
 
@@ -76,8 +110,8 @@ class ProductivityRepository extends BaseRepository {
    * @param {string} userId - User ID
    * @returns {Promise<Array>} Week's entries
    */
-  async getUserWeekEntries(userId) {
-    const entries = await this.getUserEntries(userId);
+  async getUserWeekEntries(userIdentifier, options = {}) {
+    const entries = await this.getUserEntries(userIdentifier, options);
     return entries.filter(entry => isThisWeek(entry.timestamp));
   }
 
@@ -88,8 +122,8 @@ class ProductivityRepository extends BaseRepository {
    * @param {number} endDate - End timestamp
    * @returns {Promise<Array>} Filtered entries
    */
-  async getUserEntriesByDateRange(userId, startDate, endDate) {
-    const entries = await this.getUserEntries(userId);
+  async getUserEntriesByDateRange(userIdentifier, startDate, endDate) {
+    const entries = await this.getUserEntries(userIdentifier);
     return entries.filter(entry => {
       return entry.timestamp >= startDate && entry.timestamp <= endDate;
     });
@@ -100,8 +134,8 @@ class ProductivityRepository extends BaseRepository {
    * @param {string} userId - User ID
    * @returns {Promise<number>} Total count
    */
-  async getUserTotalCount(userId) {
-    const entries = await this.getUserEntries(userId);
+  async getUserTotalCount(userIdentifier, options = {}) {
+    const entries = await this.getUserEntries(userIdentifier, options);
     return entries.length;
   }
 
@@ -110,10 +144,17 @@ class ProductivityRepository extends BaseRepository {
    * @param {string} userId - User ID
    * @returns {Promise<Object>} User statistics
    */
-  async getUserStats(userId) {
-    const allEntries = await this.getUserEntries(userId);
+  async getUserStats(userIdentifier, options = {}) {
+    const { includeSubtasks = true } = options;
+
+    const allEntries = await this.getUserEntries(userIdentifier, { includeSubtasks });
     const todayEntries = allEntries.filter(e => isToday(e.timestamp));
     const weekEntries = allEntries.filter(e => isThisWeek(e.timestamp));
+
+    const subtaskEntries = allEntries.filter(entry => entry.isSubtask);
+    const mainTaskEntries = allEntries.filter(entry => !entry.isSubtask);
+    const todaySubtasks = todayEntries.filter(entry => entry.isSubtask);
+    const weekSubtasks = weekEntries.filter(entry => entry.isSubtask);
 
     // Category analysis
     const categories = {};
@@ -147,28 +188,67 @@ class ProductivityRepository extends BaseRepository {
     const topCategory = Object.entries(categories)
       .sort((a, b) => b[1] - a[1])[0];
 
+    const todayTaskDetails = this.buildTaskEntryDetails(todayEntries, 5);
+    const recentTaskDetails = this.buildTaskEntryDetails(allEntries, 5);
+
     return {
       total: allEntries.length,
+      totalSubtasks: subtaskEntries.length,
+      totalMainTasks: mainTaskEntries.length,
       today: todayEntries.length,
+      todaySubtasks: todaySubtasks.length,
       week: weekEntries.length,
+      weekSubtasks: weekSubtasks.length,
       categories,
       dayStats,
       mostProductiveDay,
       mostProductiveDayCount: maxCount,
       topCategory: topCategory ? topCategory[0] : null,
-      topCategoryCount: topCategory ? topCategory[1] : 0
+      topCategoryCount: topCategory ? topCategory[1] : 0,
+      todayTaskDetails,
+      recentTaskDetails
     };
+  }
+
+  buildTaskEntryDetails(entries = [], limit = 5) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      return [];
+    }
+
+    const sorted = [...entries].sort((a, b) => {
+      const aTime = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const bTime = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      return bTime - aTime;
+    });
+
+    return sorted.slice(0, limit).map(entry => ({
+      taskId: entry.taskId,
+      name: entry.taskName || 'مهمة بدون اسم',
+      parentId: entry.parentId || null,
+      parentName: entry.parentName || null,
+      parentUrl: entry.parentUrl || null,
+      isSubtask: Boolean(entry.isSubtask),
+      aiWeight: Number(entry.aiWeightShare || entry.aiWeightTotal) || null,
+      aiComplexity: entry.aiComplexity || null,
+      completedAt: entry.timestamp,
+      taskUrl: entry.taskUrl || (entry.taskId ? `https://app.clickup.com/t/${entry.taskId}` : null)
+    }));
   }
 
   /**
    * Get all users statistics
    * @returns {Promise<Object>} All users stats
    */
-  async getAllUsersStats() {
+  async getAllUsersStats(options = {}) {
+    const { includeSubtasks = true } = options;
     const data = await this.read();
     const users = {};
 
     data.forEach(entry => {
+      if (!includeSubtasks && entry.isSubtask) {
+        return;
+      }
+
       if (!users[entry.userId]) {
         users[entry.userId] = {
           total: 0,
@@ -189,6 +269,78 @@ class ProductivityRepository extends BaseRepository {
     });
 
     return users;
+  }
+
+  normalizeIdentifier(value) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+
+    const normalized = String(value).trim();
+    if (!normalized) {
+      return null;
+    }
+
+    return normalized.toLowerCase();
+  }
+
+  buildIdentifierSet(identifier) {
+    const identifiers = new Set();
+
+    const addIdentifier = (value) => {
+      const normalized = this.normalizeIdentifier(value);
+      if (normalized) {
+        identifiers.add(normalized);
+      }
+    };
+
+    if (Array.isArray(identifier)) {
+      identifier.forEach(addIdentifier);
+    } else if (identifier && typeof identifier === 'object') {
+      addIdentifier(identifier.id);
+      addIdentifier(identifier.userId);
+      addIdentifier(identifier.name);
+      addIdentifier(identifier.email);
+      addIdentifier(identifier.username);
+      addIdentifier(identifier.phone);
+
+      if (Array.isArray(identifier.aliases)) {
+        identifier.aliases.forEach(addIdentifier);
+      }
+
+      if (Array.isArray(identifier.userAliases)) {
+        identifier.userAliases.forEach(addIdentifier);
+      }
+
+      if (identifier.statsKey) {
+        addIdentifier(identifier.statsKey);
+      }
+    } else {
+      addIdentifier(identifier);
+    }
+
+    return identifiers;
+  }
+
+  entryMatchesIdentifiers(entry, identifierSet) {
+    if (!identifierSet || identifierSet.size === 0) {
+      return false;
+    }
+
+    const values = [];
+
+    if (entry.userId) {
+      values.push(entry.userId);
+    }
+
+    if (Array.isArray(entry.userAliases)) {
+      values.push(...entry.userAliases);
+    }
+
+    return values
+      .map(value => this.normalizeIdentifier(value))
+      .filter(Boolean)
+      .some(value => identifierSet.has(value));
   }
 
   /**

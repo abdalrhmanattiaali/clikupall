@@ -3,7 +3,7 @@
  * خدمة التلعيب الرئيسية - الأوسمة والدروع والنقاط
  *
  * Features:
- * - Badge tracking (50+ badges)
+ * - Badge tracking (40+ badges)
  * - Shield system (10 levels)
  * - Points with multipliers
  * - Streak tracking
@@ -133,7 +133,8 @@ class GamificationService {
         highPriorityTasks: 0,
         overdueCleared: 0,
         quickCompletions: 0
-      }
+      },
+      dailyChampionHistory: []
     };
   }
 
@@ -409,6 +410,9 @@ class GamificationService {
       case 'diverse_categories':
         return this.checkDiverseCategories(userStats, req.value);
 
+      case 'manual_award':
+        return false; // يتم منحه عبر مسارات خاصة مثل بطل اليوم
+
       // Seasonal badges (check month/season)
       case 'ramadan_tasks':
       case 'january_tasks':
@@ -517,6 +521,66 @@ class GamificationService {
     }
 
     return (userStats.monthlyTasks?.[seasonKey] || 0) >= required;
+  }
+
+  /**
+   * Award daily champion badge to top performer
+   */
+  async awardDailyChampion(userId, context = {}) {
+    const badge = getBadgeById('daily_champion');
+    const todayKey = new Date().toISOString().slice(0, 10);
+
+    if (!badge) {
+      logger.warn('Daily champion badge not configured');
+      return { awarded: false, reason: 'badge_missing' };
+    }
+
+    try {
+      let awarded = false;
+
+      await achievementRepo.update(async (data) => {
+        if (!data[userId]) {
+          data[userId] = this.createDefaultUserData();
+        }
+
+        const user = data[userId];
+
+        if (!Array.isArray(user.dailyChampionHistory)) {
+          user.dailyChampionHistory = [];
+        }
+
+        if (!user.dailyChampionHistory.includes(todayKey)) {
+          user.dailyChampionHistory.push(todayKey);
+          awarded = true;
+        }
+
+        if (!Array.isArray(user.earnedBadges)) {
+          user.earnedBadges = [];
+        }
+
+        if (!user.earnedBadges.includes(badge.id)) {
+          user.earnedBadges.push(badge.id);
+        }
+
+        return data;
+      });
+
+      if (awarded) {
+        logger.success('Daily champion badge awarded', { userId, date: todayKey });
+      } else {
+        logger.debug('Daily champion badge already recorded for today', { userId, date: todayKey });
+      }
+
+      return {
+        awarded,
+        badge,
+        date: todayKey,
+        context
+      };
+    } catch (error) {
+      logger.error('Failed to award daily champion badge', { userId, error: error.message });
+      return { awarded: false, error: error.message };
+    }
   }
 
   /**

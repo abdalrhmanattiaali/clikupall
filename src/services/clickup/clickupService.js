@@ -226,10 +226,15 @@ class ClickUpService {
    * @param {Object} taskData - Task data
    * @returns {Promise<Object>} Created task
    */
-  async createTask(listId, taskData) {
+  async createTask(listId, taskData, options = {}) {
     try {
+      const headers = {};
+      if (options.asUserId) {
+        headers['X-ClickUp-User'] = options.asUserId;
+      }
+
       const response = await retry(async () => {
-        return await this.api.post(`/list/${listId}/task`, taskData);
+        return await this.api.post(`/list/${listId}/task`, taskData, { headers });
       });
 
       logger.success('Task created', {
@@ -241,7 +246,8 @@ class ClickUpService {
     } catch (error) {
       logger.error('Failed to create task', {
         listId,
-        error: error.message
+        error: error.message,
+        asUserId: options.asUserId
       });
 
       throw new ClickUpError(

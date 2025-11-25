@@ -55,7 +55,7 @@ class TaskWeightingService {
         inputHash,
         30 * 24 * 60 * 60 * 1000, // 30 days
         {
-          model_used: 'gpt-5',
+          model_used: 'gpt-4o',
           tokens_used: response.length
         }
       );
@@ -97,9 +97,9 @@ class TaskWeightingService {
    * Build system prompt for task weighting
    */
   buildWeightingSystemPrompt() {
-    return `أنت خبير في تقييم المهام وتحليل التعقيد. مهمتك هي تقييم وزن/قيمة المهمة بناءً على عدة عوامل.
+    return `أنت خبير في تقييم المهام وتحليل التعقيد ومسارات التنفيذ. قبل أن تمنح أي نقاط، اسأل نفسك: *"ما الذي تحتاجه هذه المهمة لكي تُنجز؟"* وحدد الموارد، البيانات، الموافقات، والأدوات المطلوبة لإنجازها بنجاح. بعد فهم المتطلبات، قسّم التنفيذ إلى خطوات مرقمة (منطقية ومتتابعة) ثم قيّم صعوبة المسار بناءً على العوامل التالية.
 
-**معايير التقييم:**
+**معايير التقييم (وزن إجمالي 0-100 نقطة):**
 
 1. **التعقيد الفني (0-30 نقطة)**
    - بسيط (5 نقاط): مهام روتينية، لا تتطلب مهارات خاصة
@@ -123,10 +123,16 @@ class TaskWeightingService {
    - تأثير متوسط (8 نقاط)
    - تأثير كبير (15 نقطة)
 
-5. **المتطلبات والاعتماديات (0-10 نقطة)**
+5. **المتطلبات والاعتماديات/تداخل المسار (0-10 نقطة)**
    - مستقلة تماماً (2 نقطة)
-   - بعض الاعتماديات (6 نقاط)
-   - اعتماديات معقدة (10 نقاط)
+   - بعض الاعتماديات أو موافقات (6 نقاط)
+   - اعتماديات معقدة أو مسار طويل متعدد الأطراف (10 نقاط)
+
+**تحليل المسار والمتطلبات:**
+- قسّم المهمة إلى خطوات مرتبة وواضحة (مثل: تحضير، تجهيز، تنفيذ، تسليم). اذكر عدد الخطوات الكلي.
+- لكل خطوة: اذكر العمل المطلوب، الجهد البدني أو الذهني، الوقت المتوقع بالدقائق، المهارات/الأدوات اللازمة، وأي مخاطر أو اعتماديات.
+- اذكر ما الذي تحتاجه المهمة لكي تُنجز (بيانات، صلاحيات، فرق أخرى، أدوات، ملفات، إلخ).
+- اربط نقاط الوزن بمدى صعوبة كل مرحلة في المسار.
 
 **ارجع نتيجة بصيغة JSON:**
 \`\`\`json
@@ -136,6 +142,16 @@ class TaskWeightingService {
   "estimated_time": 240,
   "skills_required": ["JavaScript", "API Integration", "Testing"],
   "dependencies": ["Task must be done after API is ready"],
+  "requirements_to_complete": ["بيانات العملاء", "صلاحية الوصول إلى واجهة API"],
+  "path_analysis": [
+    {"stage": "التحضير", "needs": "جمع المتطلبات من الفريق", "risk": "متوسط"},
+    {"stage": "التنفيذ", "needs": "تطوير التكامل", "risk": "مرتفع"}
+  ],
+  "steps_count": 4,
+  "steps": [
+    {"step": 1, "title": "التحضير", "actions": "جمع المتطلبات", "effort_minutes": 30, "skills": ["تواصل"], "risk": "منخفض"},
+    {"step": 2, "title": "التنفيذ", "actions": "تنفيذ الطلب", "effort_minutes": 180, "skills": ["تصنيع"], "risk": "متوسط"}
+  ],
   "reasoning": "المهمة معقدة لأنها تتطلب...",
   "breakdown": {
     "technical_complexity": 25,
@@ -151,6 +167,7 @@ class TaskWeightingService {
 - الوزن الكلي = مجموع كل النقاط (0-100)
 - complexity يمكن أن يكون: "simple", "medium", "complex", "very_complex"
 - estimated_time بالدقائق
+- يجب أن يتضمن التحليل متطلبات واضحة ومساراً مختصراً
 - كن موضوعياً ومنطقياً في التقييم
 - ارجع JSON فقط بدون نص إضافي`;
   }
@@ -206,7 +223,7 @@ class TaskWeightingService {
       prompt += `\n**المجلد:** ${task.folder_name}`;
     }
 
-    prompt += `\n\nقيّم هذه المهمة وأعطها وزناً مناسباً (0-100 نقطة).`;
+    prompt += `\n\n*سؤال جوهري:* ما الذي تحتاجه هذه المهمة لكي تُنجز بالكامل؟ حدد الموارد أو الموافقات أو البيانات أو الأشخاص المطلوبين، ثم استخدم هذه الإجابة لتقدير المسار ومنح الوزن (0-100 نقطة). حدد عدد الخطوات الكلي وفسّر كيف ينعكس الجهد (بدني/ذهني)، الوقت، التعقيد، وعدد المهارات على التقييم النهائي.`;
 
     return prompt;
   }
@@ -237,6 +254,13 @@ class TaskWeightingService {
       analysis.estimated_time = analysis.estimated_time || 60;
       analysis.skills_required = analysis.skills_required || [];
       analysis.dependencies = analysis.dependencies || [];
+      if (analysis.steps_count === undefined || analysis.steps_count === null) {
+        analysis.steps_count = Array.isArray(analysis.steps) ? analysis.steps.length : 0;
+      }
+      if (!Number.isFinite(analysis.steps_count)) {
+        analysis.steps_count = 0;
+      }
+      analysis.steps = analysis.steps || [];
 
       return analysis;
     } catch (error) {
@@ -252,6 +276,8 @@ class TaskWeightingService {
         estimated_time: 60,
         skills_required: [],
         dependencies: [],
+        steps_count: 0,
+        steps: [],
         reasoning: 'Failed to parse AI response - using default'
       };
     }

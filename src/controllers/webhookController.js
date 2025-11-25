@@ -8,7 +8,7 @@ import eventBus, { EVENTS } from '../core/eventBus.js';
 import clickupService from '../services/clickup/clickupService.js';
 import productivityRepo from '../repositories/productivityRepository.js';
 import gamificationService from '../services/gamification/gamificationService.js';
-import { TASK_STATUS } from '../config/constants.js';
+import { isNonOpenStatus } from '../config/constants.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
 import { TASK_CATEGORIES } from '../config/constants.js';
 
@@ -129,7 +129,8 @@ export async function handleTaskUpdated(req, res) {
       case 'status': {
         const beforeStatus = historyItem.before?.status || 'Unknown';
         const afterStatus = task.status?.status || 'Unknown';
-        const isComplete = TASK_STATUS.NON_OPEN.includes(afterStatus.toLowerCase().trim());
+        const statusType = task.status?.type || historyItem.after?.status_type || historyItem.after?.type || '';
+        const isComplete = isNonOpenStatus(afterStatus, statusType);
 
         logger.debug('Task status changed', {
           taskId,

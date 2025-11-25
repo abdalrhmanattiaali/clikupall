@@ -25,12 +25,40 @@ export const TEAM = [
 ];
 
 /**
+ * Normalize phone number by removing non-digits
+ * @param {string} phone - Phone number
+ * @returns {string} Normalized digits
+ */
+export const normalizePhone = (phone) => {
+  if (!phone) return '';
+  return phone.toString().replace(/\D/g, '');
+};
+
+/**
  * Find team member by ID
  * @param {number} id - ClickUp user ID
  * @returns {Object|null} Team member object or null
  */
 export const findMemberById = (id) => {
   return TEAM.find(member => member.id === id) || null;
+};
+
+/**
+ * Find team member by phone number
+ * @param {string} phone - Phone digits or chat ID
+ * @returns {Object|null}
+ */
+export const findMemberByPhone = (phone) => {
+  if (!phone) {
+    return null;
+  }
+
+  const digits = normalizePhone(phone);
+  if (!digits) {
+    return null;
+  }
+
+  return TEAM.find(member => normalizePhone(member.phone) === digits) || null;
 };
 
 /**

@@ -13,6 +13,7 @@ import aiService from './src/services/ai/index.js';
 import whatsappService from './src/services/whatsapp/whatsappService.js';
 import notificationService from './src/services/notification/enhancedNotificationService.js';
 import schedulerService from './src/services/scheduler/schedulerService.js';
+import './src/services/whatsapp/taskIntakeService.js';
 import databaseService from './src/database/index.js';
 
 // Routes

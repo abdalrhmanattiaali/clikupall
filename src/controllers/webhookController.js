@@ -8,7 +8,7 @@ import eventBus, { EVENTS } from '../core/eventBus.js';
 import clickupService from '../services/clickup/clickupService.js';
 import productivityRepo from '../repositories/productivityRepository.js';
 import gamificationService from '../services/gamification/gamificationService.js';
-import { TASK_STATUS } from '../config/constants.js';
+import { isNonOpenStatus } from '../config/constants.js';
 import { findMemberById, findMemberByEmail } from '../config/team.js';
 import { TASK_CATEGORIES } from '../config/constants.js';
 
@@ -129,7 +129,8 @@ export async function handleTaskUpdated(req, res) {
       case 'status': {
         const beforeStatus = historyItem.before?.status || 'Unknown';
         const afterStatus = task.status?.status || 'Unknown';
-        const isComplete = TASK_STATUS.NON_OPEN.includes(afterStatus.toLowerCase().trim());
+        const statusType = task.status?.type || historyItem.after?.status_type || historyItem.after?.type || '';
+        const isComplete = isNonOpenStatus(afterStatus, statusType);
 
         logger.debug('Task status changed', {
           taskId,
@@ -139,44 +140,55 @@ export async function handleTaskUpdated(req, res) {
         });
 
         if (isComplete) {
-          // Task completed - save productivity data
+          const assignees = (task.assignees || []).map(assignee => {
+            const member = findMemberById(assignee.id) || findMemberByEmail(assignee.email);
+            return {
+              id: assignee.id,
+              email: assignee.email,
+              username: assignee.username,
+              name: member?.name || assignee.username || assignee.email || `عضو ${assignee.id}`,
+              phone: member?.phone
+            };
+          });
+
           const categories = analyzeTaskCategory(task);
 
-          await productivityRepo.addEntry({
-            type: 'task_completed',
-            taskId: task.id,
-            userId: updaterName,
-            timestamp: Date.now(),
-            isSubtask: !!task.parent,
-            parentId: task.parent || null,
-            categories,
-            taskName: task.name,
-            taskDescription: task.description || ''
-          });
-
-          // Emit task completed event
-          eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
-            task,
-            userName: updaterName
-          });
-
-          // 🎮 Process gamification (badges, shields, points)
-          // Try to get user ID from assignees or updater
-          let userId = null;
-          if (task.assignees && task.assignees.length > 0) {
-            userId = task.assignees[0].id; // First assignee
-          } else if (historyItem.user) {
-            // Try to find by email/username
-            const member = findMemberByEmail(historyItem.user.email);
-            userId = member?.id;
+          if (assignees.length === 0) {
+            logger.warn('Task completed without assignees - skipping points and productivity', { taskId: task.id });
           }
 
-          if (userId) {
+          for (const assignee of assignees) {
             try {
-              const gamificationResult = await gamificationService.processCompletedTask(task, userId);
+              await productivityRepo.addEntry({
+                type: 'task_completed',
+                taskId: task.id,
+                userId: assignee.id,
+                timestamp: Date.now(),
+                isSubtask: !!task.parent,
+                parentId: task.parent || null,
+                categories,
+                taskName: task.name,
+                taskDescription: task.description || ''
+              });
+            } catch (prodError) {
+              logger.error('Failed to record productivity entry for assignee completion', {
+                taskId: task.id,
+                assignee: assignee.id,
+                error: prodError.message
+              });
+            }
+
+            const numericId = Number(assignee.id);
+            if (!Number.isFinite(numericId)) {
+              logger.warn('Skipping gamification - assignee has no numeric id', { taskId: task.id, assignee: assignee.id });
+              continue;
+            }
+
+            try {
+              const gamificationResult = await gamificationService.processCompletedTask(task, numericId);
               logger.success('Gamification processed', {
                 taskId: task.id,
-                userId,
+                userId: numericId,
                 pointsEarned: gamificationResult?.pointsEarned,
                 newBadges: gamificationResult?.newBadges?.length || 0
               });
@@ -184,16 +196,22 @@ export async function handleTaskUpdated(req, res) {
               logger.error('Gamification failed', {
                 error: gamError.message,
                 taskId: task.id,
-                userId
+                userId: numericId
               });
             }
-          } else {
-            logger.warn('Cannot process gamification: user ID not found', { taskId: task.id });
           }
+
+          // Emit task completed event with assignee context but keep actor attribution
+          eventBus.emitEvent(EVENTS.TASK_COMPLETED, {
+            task,
+            userName: updaterName,
+            assignees
+          });
 
           logger.success('Task completed event emitted', {
             taskId: task.id,
-            userName: updaterName
+            userName: updaterName,
+            assignees: assignees.length
           });
         } else {
           // Just status changed

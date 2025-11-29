@@ -10,11 +10,143 @@ export const TASK_STATUS = {
   NON_OPEN: [
     'complete',
     'complete & not invoiced',
+    'completed',
+    'done',
+    'finished',
     'closed',
     'canceled',
-    'cancelled'
+    'cancelled',
+    'archived',
+    'filling done',
+    'مكتمل',
+    'مكتملة',
+    'مكتمله',
+    'منجز',
+    'منجزة',
+    'منجزه',
+    'منتهي',
+    'منتهية',
+    'منتهيه',
+    'تم الانجاز',
+    'تم الإنجاز',
+    'انتهى',
+    'انتهت',
+    'تمت',
+    'مغلق',
+    'مغلقة'
+  ],
+  NON_OPEN_TYPES: [
+    'done',
+    'closed',
+    'completed',
+    'complete',
+    'archived',
+    'cancelled',
+    'canceled'
+  ],
+  NON_OPEN_KEYWORDS: [
+    'done',
+    'complete',
+    'completed',
+    'finish',
+    'finished',
+    'filling',
+    'close',
+    'closed',
+    'cancel',
+    'archive',
+    'archived',
+    'مكت',
+    'منجز',
+    'منته',
+    'تم الانجاز',
+    'تم الإنجاز',
+    'انته',
+    'اغلق',
+    'مغلق'
   ]
 };
+
+export const TASK_STATUS_CANCELLATIONS = {
+  EXACT: [
+    'canceled',
+    'cancelled',
+    'إلغاء',
+    'ملغاة',
+    'ملغى',
+    'ملغاه',
+    'مُلغاة',
+    'مُلغى'
+  ],
+  KEYWORDS: [
+    'cancel',
+    'canceled',
+    'cancelled',
+    'ملغ',
+    'الغاء'
+  ],
+  TYPES: [
+    'cancelled',
+    'canceled'
+  ]
+};
+
+export function normalizeStatusName(status) {
+  if (!status) {
+    return '';
+  }
+
+  return status
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[إأآ]/g, 'ا')
+    .replace(/\s+/g, ' ');
+}
+
+export function isNonOpenStatus(statusName = '', statusType = '') {
+  const normalizedType = statusType
+    ? statusType.toString().trim().toLowerCase()
+    : '';
+
+  if (normalizedType && TASK_STATUS.NON_OPEN_TYPES.some(type => normalizedType.includes(type))) {
+    return true;
+  }
+
+  const normalizedStatus = normalizeStatusName(statusName);
+
+  if (!normalizedStatus) {
+    return false;
+  }
+
+  if (TASK_STATUS.NON_OPEN.includes(normalizedStatus)) {
+    return true;
+  }
+
+  return TASK_STATUS.NON_OPEN_KEYWORDS.some(keyword => normalizedStatus.includes(keyword));
+}
+
+export function isCancellationStatus(statusName = '', statusType = '') {
+  const normalizedType = statusType
+    ? statusType.toString().trim().toLowerCase()
+    : '';
+
+  if (normalizedType && TASK_STATUS_CANCELLATIONS.TYPES.some(type => normalizedType.includes(type))) {
+    return true;
+  }
+
+  const normalizedStatus = normalizeStatusName(statusName);
+
+  if (!normalizedStatus) {
+    return false;
+  }
+
+  if (TASK_STATUS_CANCELLATIONS.EXACT.includes(normalizedStatus)) {
+    return true;
+  }
+
+  return TASK_STATUS_CANCELLATIONS.KEYWORDS.some(keyword => normalizedStatus.includes(keyword));
+}
 
 /**
  * Task Priority Levels

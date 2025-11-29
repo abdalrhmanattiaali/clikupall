@@ -21,6 +21,7 @@ import { isToday, calculatePercentage, generateProgressBar } from '../../utils/h
 import { formatTaskList } from '../../utils/formatters.js';
 import { shortenUrl } from '../../utils/urlShortener.js';
 import { getBadgeById } from '../../config/badges.js';
+import assigneeSuggestionService from '../whatsapp/assigneeSuggestionService.js';
 
 class SchedulerService {
   constructor() {
@@ -89,6 +90,12 @@ class SchedulerService {
       '5 8 * * *',
       'AI Morning Messages',
       () => this.sendAIMorningMessages()
+    );
+
+    this.scheduleJob(
+      '15 10 * * *',
+      'AI Assignee Suggestions for Unassigned Tasks',
+      () => this.sendUnassignedAssigneeSuggestions()
     );
 
     this.scheduleJob(
@@ -234,6 +241,16 @@ class SchedulerService {
         });
       }
     }
+  }
+
+  async sendUnassignedAssigneeSuggestions() {
+    if (!whatsappService.isClientReady()) {
+      logger.warn('WhatsApp not ready, skipping assignee suggestions');
+      return;
+    }
+
+    logger.info('Running AI assignee suggestions for unassigned tasks');
+    await assigneeSuggestionService.runDailyAssigneeSweep();
   }
 
   /**

@@ -5,6 +5,7 @@ import clickupService from '../clickup/clickupService.js';
 import TEAM, { findMemberByPhone, normalizePhone } from '../../config/team.js';
 import taskDraftingService from '../ai/taskDraftingService.js';
 import { findIntakeListByKey, getDefaultIntakeList, TASK_INTAKE_LISTS } from '../../config/taskIntake.js';
+import assigneeSuggestionService from './assigneeSuggestionService.js';
 
 const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 const ATTACHMENT_STAGES = ['COLLECTING_ATTACHMENTS'];
@@ -34,6 +35,13 @@ class WhatsAppTaskIntakeService {
     if (!member) {
       logger.debug('Skipping personal message from unknown contact', { chatId: payload?.chatId });
       return;
+    }
+
+    if (assigneeSuggestionService.shouldConsumeMessage(payload)) {
+      const consumed = await assigneeSuggestionService.handleResponse(payload, member);
+      if (consumed) {
+        return;
+      }
     }
 
     const session = this.getSession(payload.chatId, member);

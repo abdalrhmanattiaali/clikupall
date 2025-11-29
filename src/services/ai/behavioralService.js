@@ -6,7 +6,9 @@
 import aiService from './index.js';
 import databaseService from '../../database/index.js';
 import logger from '../../core/logger.js';
+import clickupService from '../clickup/clickupService.js';
 import { TEAM } from '../../config/team.js';
+import { isNonOpenStatus } from '../../config/constants.js';
 
 class BehavioralService {
   /**
@@ -16,15 +18,15 @@ class BehavioralService {
     try {
       logger.info('Generating morning recommendations', { userId });
 
-      // Get user's open tasks
-      const userTasks = databaseService.getUserTasks(userId, {
-        status: 'open'
-      }).filter(t => t.status_name !== 'Complete' && t.status_name !== 'Closed');
+      // Get user's open tasks (database snapshot + ClickUp fallback)
+      const userTasks = await this.loadOpenTasks(userId);
 
       if (userTasks.length === 0) {
         return {
-          message: '🎉 لا توجد مهام مفتوحة! استمتع بيومك!',
-          recommendations: []
+          greeting: 'صباح الخير! 🌅',
+          analysis: 'لا توجد مهام مفتوحة حالياً، استغل الوقت للمراجعة أو التعلم.',
+          tasks: [],
+          motivation: 'استمتع بيومك ولكن راجع لوحة المهام لاحقاً للتأكد من تحديث كل شيء. ✨'
         };
       }
 
@@ -48,7 +50,12 @@ class BehavioralService {
         }
       );
 
-      const recommendations = this.parseRecommendations(response);
+      let recommendations = this.parseRecommendations(response);
+
+      if (!recommendations.tasks || recommendations.tasks.length === 0) {
+        logger.warn('AI returned empty recommendations, building heuristic fallback', { userId });
+        recommendations = this.buildHeuristicRecommendations(userId, userTasks);
+      }
 
       // Store recommendations in database
       const today = new Date().setHours(0, 0, 0, 0);
@@ -78,11 +85,286 @@ class BehavioralService {
         error: error.message
       });
 
+      const fallbackTasks = await this.loadOpenTasks(userId);
+      if (fallbackTasks.length > 0) {
+        return this.buildHeuristicRecommendations(userId, fallbackTasks);
+      }
+
       return {
-        message: '❌ حدث خطأ في توليد التوصيات',
-        recommendations: []
+        greeting: 'صباح الخير! 🌅',
+        analysis: 'لم نتمكن من تحليل المهام الآن، لكن يمكنك اختيار مهمة ذات أولوية من لوحة ClickUp.',
+        tasks: [],
+        motivation: 'حافظ على تركيزك وسجّل أول مهمة تبدأ بها حتى نستطيع تتبع التقدم. 💪'
       };
     }
+  }
+
+  async loadOpenTasks(userId) {
+    let tasks = [];
+    const normalizedUserId = Number.isFinite(Number(userId)) ? Number(userId) : userId;
+
+    try {
+      const dbTasks = databaseService.getUserTasks
+        ? databaseService.getUserTasks(normalizedUserId, { status: 'open' })
+        : [];
+      const resolved = typeof dbTasks?.then === 'function' ? await dbTasks : dbTasks;
+      if (Array.isArray(resolved) && resolved.length > 0) {
+        tasks = resolved
+          .map(task => this.normalizeDatabaseTask(task))
+          .filter(task => task && !this.isClosedStatus(task.status_name));
+      }
+    } catch (error) {
+      logger.warn('Failed to load database tasks for recommendations', {
+        userId,
+        error: error.message
+      });
+    }
+
+    if (tasks.length > 0) {
+      return tasks;
+    }
+
+    try {
+      const clickupTasks = await clickupService.getAllTasksForMember(normalizedUserId, {
+        includeClosed: false,
+        includeSubtasks: true
+      });
+
+      return clickupTasks
+        .filter(task => !isNonOpenStatus(task.status?.status, task.status?.type))
+        .map(task => this.normalizeClickupTask(task))
+        .filter(Boolean);
+    } catch (error) {
+      logger.error('Failed to load ClickUp tasks for recommendations', {
+        userId,
+        error: error.message
+      });
+    }
+
+    return [];
+  }
+
+  normalizeDatabaseTask(task) {
+    if (!task) return null;
+
+    const aiWeight = this.extractAiWeight(task);
+    const complexity = task.ai_complexity || this.inferComplexity(aiWeight);
+    const estimatedTime = task.ai_estimated_time
+      ? Number(task.ai_estimated_time)
+      : this.estimateTimeFromWeight(aiWeight);
+
+    return {
+      id: task.id?.toString() || task.task_id?.toString(),
+      name: task.name || task.task_name || 'مهمة بدون اسم',
+      status_name: task.status_name || task.status || 'Open',
+      priority_label: task.priority_label || task.priority || 'عادية',
+      due_date: task.due_date || task.dueDate || null,
+      ai_weight: aiWeight,
+      ai_complexity: complexity,
+      ai_estimated_time: estimatedTime,
+      parent_id: task.parent_id || task.parentId || null,
+      parent_name: task.parent_name || task.parentName || null
+    };
+  }
+
+  normalizeClickupTask(task) {
+    if (!task) return null;
+
+    const aiWeight = this.extractAiWeight(task);
+    const complexity = task.ai_complexity || this.inferComplexity(aiWeight);
+    const estimatedTime = this.estimateTimeFromWeight(aiWeight, task.time_estimate);
+
+    return {
+      id: task.id?.toString(),
+      name: task.name || 'مهمة بدون اسم',
+      status_name: task.status?.status || task.status?.type || 'Open',
+      priority_label: task.priority?.label || task.priority?.priority || 'عادية',
+      due_date: task.due_date || null,
+      ai_weight: aiWeight,
+      ai_complexity: complexity,
+      ai_estimated_time: estimatedTime,
+      parent_id: task.parent?.id || task.parent_id || null,
+      parent_name: task.parent?.name || task.parent?.task_name || null
+    };
+  }
+
+  extractAiWeight(task) {
+    const direct = task.ai_weight ?? task.aiWeight ?? task.weight ?? null;
+    if (direct !== null && !Number.isNaN(Number(direct))) {
+      return Number(direct);
+    }
+
+    const fields = task.custom_fields || task.customFields;
+    if (Array.isArray(fields)) {
+      for (const field of fields) {
+        const value = field?.value;
+        if (!value && value !== 0) continue;
+        const label = (field?.name || field?.label || '').toLowerCase();
+        if (label.includes('ai weight') || label.includes('ai score') || label.includes('weight')) {
+          const weight = Number(value);
+          if (!Number.isNaN(weight)) {
+            return weight;
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  inferComplexity(aiWeight) {
+    if (!Number.isFinite(aiWeight)) return 'متوسطة';
+    if (aiWeight <= 20) return 'بسيطة';
+    if (aiWeight <= 40) return 'متوسطة';
+    if (aiWeight <= 70) return 'معقدة';
+    return 'معقدة جداً';
+  }
+
+  estimateTimeFromWeight(aiWeight, timeEstimateMs = null) {
+    if (Number.isFinite(timeEstimateMs) && timeEstimateMs > 0) {
+      return Math.max(15, Math.round(timeEstimateMs / 60000));
+    }
+
+    if (!Number.isFinite(aiWeight)) {
+      return 45;
+    }
+
+    if (aiWeight <= 20) return 20;
+    if (aiWeight <= 40) return 45;
+    if (aiWeight <= 70) return 90;
+    return 150;
+  }
+
+  isClosedStatus(statusName = '') {
+    const normalized = statusName.toLowerCase();
+    return ['complete', 'closed', 'done', 'مكتملة', 'منتهية'].some(label => normalized.includes(label));
+  }
+
+  buildHeuristicRecommendations(userId, tasks) {
+    const member = TEAM.find(m => m.id === parseInt(userId));
+    const userName = member?.name || 'عضو الفريق';
+    const sortedTasks = this.rankTasks(tasks);
+    const urgentCount = tasks.filter(task => this.isDueSoon(task)).length;
+    const selected = sortedTasks.slice(0, 5).map((task, index) => this.toRecommendation(task, index));
+
+    return {
+      greeting: `🌅 صباح الخير ${userName}!`,
+      analysis: `تم تحليل ${tasks.length} مهمة مفتوحة (${urgentCount} بحاجة لاتخاذ إجراء سريع). تم اختيار القائمة التالية كبداية قوية لليوم.`,
+      work_style_note: 'تم اختيار المهام وفق أقرب المواعيد وأعلى وزن AI لضمان أثر واضح منذ الصباح.',
+      tasks: selected,
+      motivation: 'ابدأ بالمهمة الأولى ثم سجّل تقدمك بعد كل خطوة لتحافظ على التركيز والزخم. 💪'
+    };
+  }
+
+  rankTasks(tasks) {
+    return [...tasks].sort((a, b) => {
+      const dueA = a.due_date ? Number(a.due_date) : Infinity;
+      const dueB = b.due_date ? Number(b.due_date) : Infinity;
+      if (dueA !== dueB) {
+        return dueA - dueB;
+      }
+
+      const weightA = Number.isFinite(a.ai_weight) ? a.ai_weight : 0;
+      const weightB = Number.isFinite(b.ai_weight) ? b.ai_weight : 0;
+      if (weightA !== weightB) {
+        return weightB - weightA;
+      }
+
+      return (a.priority_label || '').localeCompare(b.priority_label || '');
+    });
+  }
+
+  toRecommendation(task, index) {
+    const aiWeight = Number.isFinite(task.ai_weight) ? task.ai_weight : 30;
+    const complexity = task.ai_complexity || this.inferComplexity(aiWeight);
+    const estimatedTime = task.ai_estimated_time || this.estimateTimeFromWeight(aiWeight);
+    const type = this.classifyTaskType(aiWeight, task, index);
+    const reason = this.buildReason(task, aiWeight);
+    const timeSlot = this.getTimeSlotSuggestion(index, aiWeight);
+    const priorityScore = this.calculatePriorityScore(task, index);
+    const taskName = task.parent_name ? `${task.name} ← ${task.parent_name}` : task.name;
+
+    return {
+      task_id: task.id,
+      task_name: taskName,
+      type,
+      priority_score: Number(priorityScore.toFixed(2)),
+      reason,
+      estimated_time: `${estimatedTime} دقيقة`,
+      time_slot: timeSlot,
+      ai_weight: aiWeight,
+      complexity
+    };
+  }
+
+  classifyTaskType(aiWeight, task, index) {
+    if (this.isDueSoon(task)) {
+      return 'urgent';
+    }
+    if (aiWeight <= 20) {
+      return 'quick_win';
+    }
+    if (aiWeight >= 60) {
+      return 'focus_task';
+    }
+    return index === 0 ? 'morning_priority' : 'afternoon_task';
+  }
+
+  buildReason(task, aiWeight) {
+    const reasons = [];
+    if (this.isDueToday(task)) {
+      reasons.push('الموعد النهائي اليوم');
+    } else if (this.isDueSoon(task)) {
+      reasons.push('الموعد النهائي خلال 48 ساعة');
+    }
+
+    if (aiWeight >= 60) {
+      reasons.push('وزن مرتفع يحتاج جلسة تركيز');
+    } else if (aiWeight <= 20) {
+      reasons.push('مهمة خفيفة تمنحك بداية سريعة');
+    }
+
+    if (reasons.length === 0) {
+      reasons.push('إغلاقها يحرك التقدم في المسار الحالي');
+    }
+
+    return reasons.join(' + ');
+  }
+
+  getTimeSlotSuggestion(index, aiWeight) {
+    if (aiWeight >= 60) {
+      return 'morning';
+    }
+    if (aiWeight <= 20) {
+      return index === 0 ? 'morning' : 'afternoon';
+    }
+    return index <= 1 ? 'morning' : 'afternoon';
+  }
+
+  calculatePriorityScore(task, index) {
+    const base = 1 - (index * 0.12);
+    const dueSoonBonus = this.isDueSoon(task) ? 0.15 : 0;
+    const weightBonus = Number.isFinite(task.ai_weight)
+      ? Math.min(task.ai_weight, 80) / 400
+      : 0.05;
+    return Math.min(1, Math.max(0.5, base + dueSoonBonus + weightBonus));
+  }
+
+  isDueSoon(task) {
+    if (!task?.due_date) return false;
+    const dueTime = Number(task.due_date);
+    if (!Number.isFinite(dueTime)) return false;
+    const diffHours = (dueTime - Date.now()) / (1000 * 60 * 60);
+    return diffHours <= 48;
+  }
+
+  isDueToday(task) {
+    if (!task?.due_date) return false;
+    const due = new Date(Number(task.due_date));
+    const now = new Date();
+    return due.getFullYear() === now.getFullYear() &&
+      due.getMonth() === now.getMonth() &&
+      due.getDate() === now.getDate();
   }
 
   /**

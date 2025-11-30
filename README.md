@@ -7,7 +7,7 @@
 ### 🤖 الذكاء الاصطناعي
 - **دعم متعدد لمزودي AI:**
   - Claude (Anthropic)
-  - ChatGPT (OpenAI) - GPT-4o
+  - ChatGPT (OpenAI) - GPT-4o (افتراضي)
   - Google Gemini
 - **إشعارات ذكية:** توليد إشعارات سياقية تلقائياً
 - **مدرب شخصي AI:** نصائح مخصصة بناءً على الأداء
@@ -31,6 +31,7 @@
 - دمج الإشعارات المتعددة
 - إشعارات مباشرة للمهام الجديدة
 - دعم الإيقاف المؤقت
+- إنشاء مهام من محادثة واتساب الشخصية باستخدام AI لتلخيص الطلب وتعبئة ClickUp تلقائياً
 
 ### 🔗 التكاملات
 - ClickUp API (المهام، التعليقات، الحالات)
@@ -98,12 +99,16 @@ AI_PROVIDER=openai
 # OpenAI (GPT-4o)
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o
+OPENAI_FALLBACK_MODELS=gpt-4o-mini,gpt-4-turbo
 
 # أو Claude
 ANTHROPIC_API_KEY=your_claude_key
 
 # أو Gemini
 GEMINI_API_KEY=your_gemini_key
+
+# WhatsApp personal intake mapping (key|name|listId|description|default)
+WHATSAPP_TASK_LISTS=sales_quotes|Sales / Quotes|901515500888|Client proposals and offers|default;marketing|Marketing Requests|901515500999|Campaigns and content
 ```
 
 5. **تشغيل التطبيق:**
@@ -156,6 +161,29 @@ ENABLE_INSPIRATIONAL_CONTENT=true
 - `GET /test-ai-daily/:user` - اختبار تقرير يومي
 - `GET /test-ai-weekly/:user` - اختبار تقرير أسبوعي
 - `GET /test-inspiration` - اختبار محتوى تحفيزي
+
+### WhatsApp Personal Task Intake
+
+- أرسل أي طلب عبر الواتساب الشخصي للبوت وسيتم تحويله إلى قالب إنجليزي مرتب.
+- سيقترح AI القائمة المناسبة بناءً على `WHATSAPP_TASK_LISTS` ويسألك عن المرفقات.
+- بعد استعراض الملخص يمكنك إرسال كلمة "تم" لإنشاء المهمة مباشرة في ClickUp.
+- في حال عدم ضبط `WHATSAPP_TASK_LISTS` سيقوم النظام تلقائياً بتحميل الكتالوج الكامل لقوائم ClickUp (مهمات الوتس، اليوميات، المشتريات، الفرص، المالية، ERP... إلخ) لضمان تصنيف الطلبات بدقة.
+- راجع الملف [`WHATSAPP_TASK_INTAKE.md`](./WHATSAPP_TASK_INTAKE.md) لشرح الصيغة والأوامر المتاحة (إلغاء، جديد، إضافة ملفات...) وللاطلاع على الجدول الكامل بالقوائم الافتراضية.
+
+## 📚 التوثيق والتحقق
+
+- [`GAMIFICATION_SYSTEM.md`](./GAMIFICATION_SYSTEM.md): دليل شامل لجميع عناصر نظام التلعيب (الأوسمة، الدروع، النقاط، السلاسل، ولوحات المتصدرين) مع شرح تفصيلي لكيفية عمل كل جزء.
+- [`FEATURE_TEST_LINKS.md`](./FEATURE_TEST_LINKS.md): سيناريوهات جاهزة وروابط مباشرة لاختبار الإشعارات، نظام التحفيز، تقارير AI، ولوحات المتصدرين.
+- [`NOTIFICATION_FULL_REFERENCE.md`](./NOTIFICATION_FULL_REFERENCE.md): مرجع شامل لكل أنواع الإشعارات، القنوات، المستلمين، وتوقيت الإرسال مع توضيح مصدر البيانات والذكاء الاصطناعي المستخدم.
+- [`WHATSAPP_TASK_INTAKE.md`](./WHATSAPP_TASK_INTAKE.md): كيفية إعداد متغيرات القوائم واختبار تحويل رسائل الواتساب إلى مهام ClickUp.
+- [`DAILY_NOTIFICATION_EXAMPLE.md`](./DAILY_NOTIFICATION_EXAMPLE.md): محاكاة يوم كامل تُظهر كل إشعار محتمل (خاص، مجموعة، تحفيز، AI، وتعليقات) مع رسائل فعلية يمكن مقارنتها أثناء الاختبار.
+- للتحقق من توافق الكود مع المستندات يمكنك تشغيل:
+
+```bash
+npm run verify:gamification
+```
+
+سيقوم الفحص بالتأكد من وجود جميع الأوسمة، مستويات الدروع العشرة، جداول المضاعفات، ومحرك النقاط الموصوف في المستندات، بالإضافة إلى ضمان جاهزية الخدمة لإرجاع بيانات افتراضية صحيحة.
 
 ## 📅 الجدولة التلقائية
 
@@ -310,3 +338,5 @@ ISC License
 ---
 
 Made with ❤️ by ClickUp All Team
+يمكنك أيضاً تحديد ترتيب بدائل GPT-4 عبر المتغير `OPENAI_FALLBACK_MODELS` لضمان الاستمرار في حال عدم توفر النموذج الأساسي.
+

@@ -360,10 +360,12 @@ An image of the document is attached separately. Use it to detect the document t
     }
 
     try {
-      const systemPrompt = 'You rewrite short task names into polished English titles (max 9 words). Respond with JSON {"title": "..."} only.';
+      const systemPrompt = 'You rewrite short task names into polished English titles (max 9 words). Always preserve the core nouns, quantities, and whether it is a purchase/procurement, approval, or finance action. If the note contains شراء/مشتريات/purchase, include "Purchase" or "Procurement". Respond with JSON {"title": "..."} only.';
+      const hint = this.buildIntentHint(requestText);
       const userPrompt = `Original WhatsApp note: ${requestText}
 Current title: ${trimmedTitle || 'N/A'}
-Return an action-oriented English task title.`;
+Intent hint: ${hint}
+Return an action-oriented English task title that stays true to the note.`;
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
         temperature: 0.2,
         maxTokens: 100
@@ -392,6 +394,11 @@ Return an action-oriented English task title.`;
     if (!requestText) {
       return defaultTitle;
     }
+    const intentBased = this.buildIntentBasedTitle(requestText);
+    if (intentBased) {
+      return intentBased;
+    }
+
     const sanitized = requestText
       .replace(/[^\w\s]/g, ' ')
       .replace(/[\u0600-\u06FF]/g, '')
@@ -402,6 +409,42 @@ Return an action-oriented English task title.`;
     }
     const words = sanitized.split(' ').slice(0, 8).join(' ');
     return words || defaultTitle;
+  }
+
+  buildIntentHint(requestText) {
+    const normalized = this.normalizeText(requestText);
+    if (!normalized) return 'General';
+
+    if (normalized.includes('شراء') || normalized.includes('مشتريات') || normalized.includes('purchase')) {
+      return 'Procurement/purchase request with specific items.';
+    }
+    if (normalized.includes('اعتماد') || normalized.includes('approval')) {
+      return 'Client approval / confirmation task.';
+    }
+    if (normalized.includes('تحويل') || normalized.includes('bank')) {
+      return 'Finance transfer or receipt action.';
+    }
+    return 'General operational task.';
+  }
+
+  buildIntentBasedTitle(requestText) {
+    const normalized = this.normalizeText(requestText);
+    if (!normalized) return '';
+
+    const numbers = (requestText.match(/[0-9.,]+/g) || []).join(' ').trim();
+    const shortArabic = requestText.trim().split(/\s+/).slice(0, 4).join(' ');
+
+    if (normalized.startsWith('شراء') || normalized.includes('مشتريات') || normalized.includes('purchase')) {
+      return numbers
+        ? `Purchase Request: ${numbers}`
+        : `Purchase Request: ${shortArabic || 'Items'}`;
+    }
+
+    if (normalized.includes('اعتماد')) {
+      return `Approval Request: ${numbers || shortArabic || 'Client Order'}`;
+    }
+
+    return '';
   }
 
   extractJson(response) {
@@ -539,6 +582,11 @@ Return an action-oriented English task title.`;
     const catalog = this.resolveCatalog(listCatalog);
     const normalizedAiKey = listKeyFromAi?.toString().trim().toLowerCase();
 
+    const leadingSelection = this.detectLeadingKeywordSelection(requestText, catalog);
+    if (leadingSelection) {
+      return leadingSelection;
+    }
+
     if (forcedSelection?.listKey) {
       const forcedMatch = catalog.find(list => list.key.toLowerCase() === forcedSelection.listKey.toLowerCase());
       if (forcedMatch) {
@@ -574,6 +622,28 @@ Return an action-oriented English task title.`;
       listKey: defaultList.key,
       listReason: `Fallback to ${defaultList.name} due to missing AI selection.`
     };
+  }
+
+  detectLeadingKeywordSelection(requestText, catalog) {
+    const normalized = this.normalizeText(requestText);
+    if (!normalized) return null;
+
+    const startsWithPurchase = normalized.startsWith('شراء ')
+      || normalized === 'شراء'
+      || normalized.startsWith('شرائ ')
+      || normalized.startsWith('شراء_');
+
+    if (startsWithPurchase) {
+      const match = catalog.find(list => list.key === 'daily_procurement');
+      if (match) {
+        return {
+          listKey: match.key,
+          listReason: 'Detected leading "شراء" keyword, routing to procurement list.'
+        };
+      }
+    }
+
+    return null;
   }
 
   async requestListSelectionFromAi(requestText, catalog) {

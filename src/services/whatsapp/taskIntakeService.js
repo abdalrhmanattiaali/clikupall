@@ -6,6 +6,7 @@ import TEAM, { findMemberByPhone, normalizePhone } from '../../config/team.js';
 import taskDraftingService from '../ai/taskDraftingService.js';
 import { findIntakeListByKey, getDefaultIntakeList, TASK_INTAKE_LISTS } from '../../config/taskIntake.js';
 import assigneeSuggestionService from './assigneeSuggestionService.js';
+import intakePreferencesRepository from './intakePreferencesRepository.js';
 
 const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 const ATTACHMENT_STAGES = ['COLLECTING_ATTACHMENTS'];
@@ -139,6 +140,7 @@ class WhatsAppTaskIntakeService {
       selectedAssignees: [],
       arabicTitle: '',
       titleLanguage: 'en',
+      preferences: [],
       additionalNotes: [],
       updatedAt: Date.now()
     };
@@ -167,12 +169,14 @@ class WhatsAppTaskIntakeService {
     session.selectedAssignees = [];
     session.arabicTitle = '';
     session.titleLanguage = 'en';
+    session.preferences = await intakePreferencesRepository.getMemberPreferences(session.member?.id);
 
     await whatsappService.sendMessage(session.chatId, `👌 فهمت: *${body}*\nجاري تحويل الطلب إلى مهمة مرتبة...`);
 
     const blueprint = await taskDraftingService.generateBlueprint(body, {
       member: session.member,
-      listCatalog: TASK_INTAKE_LISTS
+      listCatalog: TASK_INTAKE_LISTS,
+      preferences: session.preferences
     });
 
     session.blueprint = blueprint;
@@ -199,6 +203,7 @@ class WhatsAppTaskIntakeService {
       session.selectedAssignees = [];
       session.arabicTitle = '';
       session.titleLanguage = 'en';
+      session.preferences = await intakePreferencesRepository.getMemberPreferences(session.member?.id);
 
       await whatsappService.sendMessage(session.chatId, '🖼️ تم استلام الملف/الصورة، جاري قراءة المستند وتحويله إلى مهمة واضحة...');
 
@@ -219,7 +224,8 @@ class WhatsAppTaskIntakeService {
 
       const blueprint = await taskDraftingService.generateBlueprintFromImage(attachment, {
         member: session.member,
-        listCatalog: TASK_INTAKE_LISTS
+        listCatalog: TASK_INTAKE_LISTS,
+        preferences: session.preferences
       });
 
       session.blueprint = blueprint;
@@ -285,6 +291,7 @@ class WhatsAppTaskIntakeService {
 
     if (choices.includes(1)) {
       await whatsappService.sendMessage(session.chatId, `📂 تم اعتماد القائمة المقترحة: ${session.targetList?.name || 'General'}`);
+      await this.recordListChoice(session);
       session.stage = 'SELECTING_ASSIGNEE';
       await this.promptForAssignee(session);
       return;
@@ -312,6 +319,7 @@ class WhatsAppTaskIntakeService {
 
     session.targetList = picked;
     await whatsappService.sendMessage(session.chatId, `📂 تم اختيار القائمة: ${picked.name}`);
+    await this.recordListChoice(session);
     session.stage = 'SELECTING_ASSIGNEE';
     await this.promptForAssignee(session);
   }
@@ -614,6 +622,15 @@ class WhatsAppTaskIntakeService {
     }
 
     return [member.id];
+  }
+
+  async recordListChoice(session) {
+    try {
+      await intakePreferencesRepository.recordListChoice(session.member?.id, session.targetList?.key);
+      session.preferences = await intakePreferencesRepository.getMemberPreferences(session.member?.id);
+    } catch (error) {
+      logger.warn('Failed to persist list choice preference', { error: error.message });
+    }
   }
 
   formatAssigneeNames(session) {

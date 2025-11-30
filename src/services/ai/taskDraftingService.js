@@ -134,10 +134,10 @@ class TaskDraftingService {
     ];
   }
 
-  async generateBlueprint(requestText, { member, listCatalog } = {}) {
+  async generateBlueprint(requestText, { member, listCatalog, preferences = [] } = {}) {
     try {
       const systemPrompt = this.buildSystemPrompt();
-      const userPrompt = this.buildUserPrompt(requestText, member, listCatalog);
+      const userPrompt = this.buildUserPrompt(requestText, member, listCatalog, preferences);
 
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
         temperature: 0.35,
@@ -145,7 +145,7 @@ class TaskDraftingService {
       });
 
       const parsed = this.extractJson(response);
-      const normalized = await this.normalizeBlueprint(parsed, requestText, listCatalog);
+      const normalized = await this.normalizeBlueprint(parsed, requestText, listCatalog, preferences);
       normalized.title = await this.ensureEnglishTitle(normalized.title, requestText);
       normalized.arabicTitle = await this.ensureArabicTitle(normalized, requestText);
 
@@ -161,14 +161,14 @@ class TaskDraftingService {
         error: error.message
       });
 
-      const fallback = await this.fallbackBlueprint(requestText, member, listCatalog);
+      const fallback = await this.fallbackBlueprint(requestText, member, listCatalog, preferences);
       fallback.title = await this.ensureEnglishTitle(fallback.title, requestText);
       fallback.arabicTitle = await this.ensureArabicTitle(fallback, requestText);
       return fallback;
     }
   }
 
-  async generateBlueprintFromImage(attachment, { member = {}, listCatalog } = {}) {
+  async generateBlueprintFromImage(attachment, { member = {}, listCatalog, preferences = [] } = {}) {
     const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
       ? listCatalog
       : TASK_INTAKE_LISTS;
@@ -184,7 +184,8 @@ class TaskDraftingService {
       const userPrompt = this.buildImageUserPrompt({
         member,
         fileInfo,
-        listCatalog: catalog
+        listCatalog: catalog,
+        preferences
       });
 
       const response = imageDataUrl
@@ -198,7 +199,7 @@ class TaskDraftingService {
         });
 
       const parsed = this.extractJson(response);
-      const normalized = await this.normalizeBlueprint(parsed, safeFilename, catalog);
+      const normalized = await this.normalizeBlueprint(parsed, safeFilename, catalog, preferences);
       normalized.title = await this.ensureEnglishTitle(normalized.title, safeFilename);
       normalized.arabicTitle = await this.ensureArabicTitle(normalized, safeFilename);
       normalized.source = 'image';
@@ -217,7 +218,7 @@ class TaskDraftingService {
         filename: safeFilename
       });
 
-      const fallback = await this.fallbackBlueprintFromImage(safeFilename, member, catalog);
+      const fallback = await this.fallbackBlueprintFromImage(safeFilename, member, catalog, preferences);
       fallback.title = await this.ensureEnglishTitle(fallback.title, safeFilename);
       fallback.arabicTitle = await this.ensureArabicTitle(fallback, safeFilename);
       fallback.source = 'image';
@@ -255,7 +256,7 @@ Respond with this JSON schema:
 Ensure checklist items cover the entire execution path and never leave the list_key empty.`;
   }
 
-  buildUserPrompt(requestText, member, listCatalog) {
+  buildUserPrompt(requestText, member, listCatalog, preferences = []) {
     const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
       ? listCatalog
       : TASK_INTAKE_LISTS;
@@ -275,12 +276,19 @@ Ensure checklist items cover the entire execution path and never leave the list_
       2
     );
 
+    const preferenceLines = (preferences || [])
+      .slice(0, 3)
+      .map(pref => `- ${pref.listKey} (count: ${pref.count})`)
+      .join('\n') || 'none yet';
+
     return `Requester: ${member?.name || 'Unknown member'}
 Phone hint: ${member?.phone || 'N/A'}
 Raw Arabic request: """${requestText}"""
 Assume the requester is the customer placing an order or request.
 If no customer name is visible, mark needs_customer_name=true so the user can be asked for it in Arabic.
 If the text is only a list of items and there is no PO/order reference, route to the sample approval list.
+Member history shows these preferred lists (use when ambiguous):
+${preferenceLines}
 
 Available ClickUp lists:
 ${listsDescription}
@@ -323,7 +331,7 @@ Respond with this JSON schema:
 Always pick the most relevant list_key; never leave it empty.`;
   }
 
-  buildImageUserPrompt({ member, fileInfo, listCatalog }) {
+  buildImageUserPrompt({ member, fileInfo, listCatalog, preferences = [] }) {
     const catalog = Array.isArray(listCatalog) && listCatalog.length > 0
       ? listCatalog
       : TASK_INTAKE_LISTS;
@@ -343,6 +351,11 @@ Always pick the most relevant list_key; never leave it empty.`;
       2
     );
 
+    const preferenceLines = (preferences || [])
+      .slice(0, 3)
+      .map(pref => `- ${pref.listKey} (count: ${pref.count})`)
+      .join('\n') || 'none yet';
+
     return `Requester: ${member?.name || 'Unknown member'}
 Phone hint: ${member?.phone || 'N/A'}
 Document info: ${fileInfo}
@@ -355,6 +368,9 @@ ${listsDescription}
 
 Full list catalog (JSON):
 ${listsJson}
+
+Member history hints (use only if relevant):
+${preferenceLines}
 An image of the document is attached separately. Use it to detect the document type, customer name, PO number, totals, and generate the JSON response.`;
   }
 
@@ -516,7 +532,7 @@ Return an action-oriented English task title that stays true to the note.`;
     throw new Error('AI response did not include JSON');
   }
 
-  async normalizeBlueprint(blueprint, requestText, listCatalog) {
+  async normalizeBlueprint(blueprint, requestText, listCatalog, preferences = []) {
     const checklist = Array.isArray(blueprint?.checklist) && blueprint.checklist.length > 0
       ? blueprint.checklist
       : this.defaultChecklist;
@@ -541,7 +557,8 @@ Return an action-oriented English task title that stays true to the note.`;
       requestText,
       listCatalog,
       blueprint?.list_reason,
-      transferHint || poHint
+      transferHint || poHint,
+      preferences
     );
 
     return {
@@ -562,12 +579,12 @@ Return an action-oriented English task title that stays true to the note.`;
     };
   }
 
-  async fallbackBlueprint(requestText, member, listCatalog) {
+  async fallbackBlueprint(requestText, member, listCatalog, preferences = []) {
     const checklist = this.defaultChecklist;
     const requirements = ['Clarify scope with requester'];
     const poHint = this.detectPurchaseOrderContext({ requestText });
     const transferHint = this.detectIncomingTransferContext({ requestText });
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint);
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint, preferences);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -587,7 +604,7 @@ Return an action-oriented English task title that stays true to the note.`;
     };
   }
 
-  async fallbackBlueprintFromImage(filename, member, listCatalog) {
+  async fallbackBlueprintFromImage(filename, member, listCatalog, preferences = []) {
     const checklist = [
       'Extract key fields from the document',
       'Confirm supplier/customer details',
@@ -598,7 +615,7 @@ Return an action-oriented English task title that stays true to the note.`;
     const requestText = `[Image Intake] ${filename || 'Document'}`;
     const poHint = this.detectPurchaseOrderContext({ requestText });
     const transferHint = this.detectIncomingTransferContext({ requestText });
-    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint);
+    const listSelection = await this.resolveListSelection(null, requestText, listCatalog, null, transferHint || poHint, preferences);
 
     return {
       title: this.generateTitleFromRequest(requestText, member),
@@ -632,7 +649,7 @@ Return an action-oriented English task title that stays true to the note.`;
     return `### Objective\nTranslate the requester note into an actionable ClickUp task.\n\n### Source Note\n${requestText}\n\n### Requirements\n${requirementsList}\n\n### Execution Path\n${checklistList}\n\n### Success Criteria\n- Task acknowledged in ClickUp\n- Owner updates progress within the same day`;
   }
 
-  async resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason, forcedSelection) {
+  async resolveListSelection(listKeyFromAi, requestText, listCatalog, aiReason, forcedSelection, preferences = []) {
     const catalog = this.resolveCatalog(listCatalog);
     const normalizedAiKey = listKeyFromAi?.toString().trim().toLowerCase();
 
@@ -666,6 +683,11 @@ Return an action-oriented English task title that stays true to the note.`;
       return aiFallbackSelection;
     }
 
+    const preferenceSelection = this.selectFromPreferences(preferences, catalog);
+    if (preferenceSelection) {
+      return preferenceSelection;
+    }
+
     const heuristicMatch = this.inferListByKeywords(requestText, catalog);
     if (heuristicMatch) {
       return heuristicMatch;
@@ -675,6 +697,27 @@ Return an action-oriented English task title that stays true to the note.`;
     return {
       listKey: defaultList.key,
       listReason: `Fallback to ${defaultList.name} due to missing AI selection.`
+    };
+  }
+
+  selectFromPreferences(preferences = [], catalog = []) {
+    if (!preferences.length || !catalog.length) {
+      return null;
+    }
+
+    const top = preferences.find(pref => catalog.some(list => list.key === pref.listKey));
+    if (!top) {
+      return null;
+    }
+
+    const list = catalog.find(item => item.key === top.listKey);
+    if (!list) {
+      return null;
+    }
+
+    return {
+      listKey: list.key,
+      listReason: `Prior user choices favor ${list.name} (selected ${top.count} time${top.count > 1 ? 's' : ''}).`
     };
   }
 

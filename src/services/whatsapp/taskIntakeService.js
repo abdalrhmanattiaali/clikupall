@@ -37,6 +37,10 @@ class WhatsAppTaskIntakeService {
       return;
     }
 
+    if (await assigneeSuggestionService.maybeHandleManualTrigger(payload, member)) {
+      return;
+    }
+
     if (assigneeSuggestionService.shouldConsumeMessage(payload)) {
       const consumed = await assigneeSuggestionService.handleResponse(payload, member);
       if (consumed) {

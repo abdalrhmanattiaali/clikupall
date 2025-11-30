@@ -14,6 +14,8 @@ class AssigneeSuggestionService {
   constructor() {
     this.pendingOffers = new Map(); // chatId -> { member, offers: [offer], backlog: [offer], waitingForMore: bool }
     this.BATCH_LIMIT = 10;
+    this.MANUAL_TRIGGER_CODES = ['77'];
+    this.MANUAL_TRIGGER_PHRASES = ['رجح مهمات', 'ترشيح مهمات', 'اقتراح مكلفين'];
   }
 
   /**
@@ -57,6 +59,65 @@ class AssigneeSuggestionService {
         });
       }
     }
+  }
+
+  /**
+   * On-demand trigger: build and deliver offers only to the requesting member.
+   */
+  async runOnDemandAssigneeSweep(member) {
+    if (!whatsappService.isClientReady()) {
+      logger.warn('WhatsApp not ready, skipping on-demand assignee sweep');
+      return;
+    }
+
+    const tasks = await this.collectUnassignedTasks();
+    if (tasks.length === 0) {
+      await whatsappService.sendMessage(getWhatsAppId(member), 'لا توجد مهام غير مسندة حالياً.');
+      return;
+    }
+
+    const memberProfiles = await this.buildMemberProfiles();
+    const requestingProfile = memberProfiles.find(p => p.id === member.id);
+    const offers = [];
+
+    for (const task of tasks) {
+      try {
+        const recommendation = await this.recommendAssignee(task, memberProfiles);
+        if (!recommendation || !recommendation.assigneeId) {
+          continue;
+        }
+
+        const candidateId = Number(recommendation.assigneeId);
+        const targetId = Number.isFinite(candidateId) ? candidateId : recommendation.assigneeId;
+        if (targetId !== member.id) {
+          // Prefer to skip tasks not matched to this member unless fallback recommends them.
+          const categoryScore = (requestingProfile?.categories?.[task.category] || 0) * 3;
+          if (!categoryScore) continue;
+          recommendation.reason = recommendation.reason || 'ترشيح بناءً على خبرتك السابقة في هذا النوع من المهام';
+        }
+
+        offers.push({ task, recommendation });
+      } catch (error) {
+        logger.error('Failed to process on-demand recommendation', {
+          taskId: task.id,
+          error: error.message
+        });
+      }
+    }
+
+    if (offers.length === 0) {
+      await whatsappService.sendMessage(getWhatsAppId(member), 'لا توجد مهام مناسبة للترشيح لك حالياً.');
+      return;
+    }
+
+    // Reset any previous pending offers for this chat before queueing new ones.
+    this.pendingOffers.delete(getWhatsAppId(member));
+
+    for (const offer of offers) {
+      await this.queueOffer(member, offer.task, offer.recommendation, { direct: true });
+    }
+
+    await whatsappService.sendMessage(getWhatsAppId(member), '🔍 تم تفعيل وضع "ترشيح المهمات" بناءً على طلبك. سيتم عرض المهام واحدة تلو الأخرى.');
   }
 
   /**
@@ -269,7 +330,7 @@ class AssigneeSuggestionService {
     }
   }
 
-  async queueOffer(member, task, recommendation) {
+  async queueOffer(member, task, recommendation, { direct = false } = {}) {
     const chatId = getWhatsAppId(member);
     const existing = this.pendingOffers.get(chatId) || { member, offers: [], backlog: [], waitingForMore: false };
 
@@ -282,7 +343,7 @@ class AssigneeSuggestionService {
     }
     this.pendingOffers.set(chatId, existing);
 
-    if (existing.offers.length === 1) {
+    if ((direct && existing.offers.length === 1) || (!direct && existing.offers.length === 1)) {
       await this.sendOfferMessage(chatId, member, existing.offers[0]);
     }
   }
@@ -317,6 +378,26 @@ class AssigneeSuggestionService {
   hasPendingOffer(chatId) {
     const pending = this.pendingOffers.get(chatId);
     return pending && pending.offers.length > 0;
+  }
+
+  /**
+   * Detect manual trigger commands.
+   */
+  isManualTrigger(body = '') {
+    const normalized = body.trim();
+    return this.MANUAL_TRIGGER_CODES.includes(normalized) ||
+      this.MANUAL_TRIGGER_PHRASES.some(p => normalized.includes(p));
+  }
+
+  async maybeHandleManualTrigger(payload, member) {
+    const body = (payload?.body || '').trim();
+    if (!body || !member) return false;
+
+    if (!this.isManualTrigger(body)) return false;
+
+    await whatsappService.sendMessage(payload.chatId, '✅ تم استلام طلب ترشيح المهام. سيتم عرض الترشيحات واحدة تلو الأخرى.');
+    await this.runOnDemandAssigneeSweep(member);
+    return true;
   }
 
   /**

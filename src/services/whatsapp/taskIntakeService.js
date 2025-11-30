@@ -7,6 +7,7 @@ import taskDraftingService from '../ai/taskDraftingService.js';
 import { findIntakeListByKey, getDefaultIntakeList, TASK_INTAKE_LISTS } from '../../config/taskIntake.js';
 import assigneeSuggestionService from './assigneeSuggestionService.js';
 import intakePreferencesRepository from './intakePreferencesRepository.js';
+import enhancedNotificationService from '../notification/enhancedNotificationService.js';
 
 const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
 const ATTACHMENT_STAGES = ['COLLECTING_ATTACHMENTS'];
@@ -129,6 +130,11 @@ class WhatsAppTaskIntakeService {
       return existing;
     }
 
+    // Clear any stale notification pause if session expired
+    if (existing && member?.phone) {
+      enhancedNotificationService.resumeUserNotifications(member.phone);
+    }
+
     const session = {
       chatId,
       member,
@@ -161,6 +167,7 @@ class WhatsAppTaskIntakeService {
     }
 
     session.stage = 'PROCESSING';
+    enhancedNotificationService.pauseUserNotifications(session.member?.phone || session.chatId, 'task_intake');
     session.originalText = body;
     session.attachments = [];
     session.additionalNotes = [];
@@ -195,6 +202,7 @@ class WhatsAppTaskIntakeService {
   async startImageBlueprint(session, message) {
     try {
       session.stage = 'PROCESSING';
+      enhancedNotificationService.pauseUserNotifications(session.member?.phone || session.chatId, 'task_intake');
       session.originalText = message?.caption || '[Image intake]';
       session.attachments = [];
       session.additionalNotes = [];
@@ -528,11 +536,13 @@ class WhatsAppTaskIntakeService {
     try {
       await whatsappService.sendMessage(session.chatId, '⏳ جاري إنشاء المهمة ورفع المرفقات...');
 
+      const notificationPhone = session.member?.phone || session.chatId;
       const listId = session.targetList?.listId || this.defaultList?.listId;
       if (!listId) {
         await whatsappService.sendMessage(session.chatId, '❌ لم يتم إعداد معرّف قائمة ClickUp لاستقبال هذه المهمة. حدّث متغير WHATSAPP_TASK_LISTS أو CLICKUP_SAMPLE_LIST_ID.');
         logger.error('Missing ClickUp list ID for WhatsApp intake');
         session.stage = 'IDLE';
+        await enhancedNotificationService.resumeUserNotifications(notificationPhone);
         return;
       }
 
@@ -547,10 +557,12 @@ class WhatsAppTaskIntakeService {
 
       await whatsappService.sendMessage(session.chatId, `🎯 تم إنشاء المهمة *${createdTask.name}* في قائمة *${session.targetList?.name}*\n🔗 ${createdTask.url}`);
       this.sessions.delete(session.chatId);
+      await enhancedNotificationService.resumeUserNotifications(notificationPhone);
     } catch (error) {
       logger.error('Failed to create ClickUp task from WhatsApp intake', { error: error.message });
       await whatsappService.sendMessage(session.chatId, '❌ حدث خطأ أثناء إنشاء المهمة. حاول مرة أخرى أو تواصل مع المطور.');
       session.stage = 'IDLE';
+      await enhancedNotificationService.resumeUserNotifications(session.member?.phone || session.chatId);
     }
   }
 
@@ -706,6 +718,7 @@ class WhatsAppTaskIntakeService {
 
   async cancelSession(session, message) {
     this.sessions.delete(session.chatId);
+    await enhancedNotificationService.resumeUserNotifications(session.member?.phone || session.chatId);
     await whatsappService.sendMessage(session.chatId, message);
   }
 

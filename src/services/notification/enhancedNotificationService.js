@@ -20,6 +20,7 @@ class EnhancedNotificationService {
     this.batchDelay = env.notifications.batchDelay;
     this.sentDirectNotifications = new Set();
     this.whatsappReady = false;
+    this.pausedUsers = new Map(); // phone -> { reason, startedAt, pending: [] }
 
     // Deduplication: track recent notifications to prevent duplicates
     this.recentNotifications = new Map(); // key: taskId-eventType, value: timestamp
@@ -2499,6 +2500,19 @@ class EnhancedNotificationService {
           messagePreview: message.substring(0, 50) + '...'
         });
       } else if (target === 'user' && phone) {
+        const normalizedPhone = this.normalizePhone(phone);
+        if (this.isUserPaused(normalizedPhone)) {
+          const entry = this.pausedUsers.get(normalizedPhone) || { pending: [] };
+          entry.pending = entry.pending || [];
+          entry.pending.push({ message, phone: normalizedPhone });
+          this.pausedUsers.set(normalizedPhone, entry);
+          logger.info('🔇 Personal notification deferred due to active WhatsApp session', {
+            phone: normalizedPhone.substring(0, 8) + '...',
+            pending: entry.pending.length,
+            reason: entry.reason || 'whatsapp_session'
+          });
+          return;
+        }
         await whatsappService.sendToUser(phone, message);
         logger.success('✅ Notification sent to user', {
           phone: phone.substring(0, 8) + '...',
@@ -3356,6 +3370,52 @@ class EnhancedNotificationService {
 
     msg += '\n**املأ القالب الآن:**';
     return msg;
+  }
+
+  /**
+   * Pause personal notifications for a specific user (by phone).
+   */
+  pauseUserNotifications(phone, reason = 'whatsapp_session') {
+    const normalized = this.normalizePhone(phone);
+    if (!normalized) return;
+
+    const existing = this.pausedUsers.get(normalized) || { pending: [] };
+    existing.reason = reason;
+    existing.startedAt = existing.startedAt || Date.now();
+    this.pausedUsers.set(normalized, existing);
+
+    logger.debug('Personal notifications paused', { phone: normalized.substring(0, 8) + '...', reason });
+  }
+
+  /**
+   * Resume personal notifications and flush any pending queue.
+   */
+  async resumeUserNotifications(phone) {
+    const normalized = this.normalizePhone(phone);
+    if (!normalized || !this.pausedUsers.has(normalized)) return;
+
+    const entry = this.pausedUsers.get(normalized);
+    this.pausedUsers.delete(normalized);
+
+    logger.debug('Personal notifications resumed', {
+      phone: normalized.substring(0, 8) + '...',
+      queued: entry.pending?.length || 0
+    });
+
+    if (Array.isArray(entry.pending)) {
+      for (const pending of entry.pending) {
+        await this.sendImmediateNotification(pending.message, 'user', pending.phone);
+      }
+    }
+  }
+
+  isUserPaused(phone) {
+    const normalized = this.normalizePhone(phone);
+    return normalized ? this.pausedUsers.has(normalized) : false;
+  }
+
+  normalizePhone(value) {
+    return `${value || ''}`.replace(/\D/g, '');
   }
 }
 

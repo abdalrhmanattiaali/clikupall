@@ -5,6 +5,7 @@ import aiService from '../ai/index.js';
 import productivityRepo from '../../repositories/productivityRepository.js';
 import TEAM, { findMemberById, findMemberByPhone, getWhatsAppId } from '../../config/team.js';
 import { isNonOpenStatus } from '../../config/constants.js';
+import enhancedNotificationService from '../notification/enhancedNotificationService.js';
 
 /**
  * Assignee Suggestion Service
@@ -333,6 +334,7 @@ class AssigneeSuggestionService {
   async queueOffer(member, task, recommendation, { direct = false } = {}) {
     const chatId = getWhatsAppId(member);
     const existing = this.pendingOffers.get(chatId) || { member, offers: [], backlog: [], waitingForMore: false };
+    const isNewSession = !this.pendingOffers.has(chatId);
 
     const offer = { task, recommendation, createdAt: Date.now() };
 
@@ -345,6 +347,10 @@ class AssigneeSuggestionService {
 
     if ((direct && existing.offers.length === 1) || (!direct && existing.offers.length === 1)) {
       await this.sendOfferMessage(chatId, member, existing.offers[0]);
+    }
+
+    if (isNewSession) {
+      enhancedNotificationService.pauseUserNotifications(member.phone, 'assignee_suggestion');
     }
   }
 
@@ -426,10 +432,12 @@ class AssigneeSuggestionService {
           await this.sendOfferMessage(chatId, session.member, session.offers[0]);
         } else {
           this.pendingOffers.delete(chatId);
+          await enhancedNotificationService.resumeUserNotifications(member?.phone || chatId);
         }
       } else if (choice === 2) {
         await whatsappService.sendMessage(chatId, 'تم إيقاف الترشيحات الإضافية لليوم.');
         this.pendingOffers.delete(chatId);
+        await enhancedNotificationService.resumeUserNotifications(member?.phone || chatId);
       } else {
         await whatsappService.sendMessage(chatId, 'الخيارات: 1 للمزيد، 2 للإيقاف.');
       }
@@ -456,6 +464,7 @@ class AssigneeSuggestionService {
       await whatsappService.sendMessage(chatId, 'انتهت أول دفعة من الترشيحات (10). هل تريد المزيد؟\n1) نعم، اعرض دفعة جديدة\n2) لا، أوقف الترشيحات');
     } else {
       this.pendingOffers.delete(chatId);
+      await enhancedNotificationService.resumeUserNotifications(member?.phone || chatId);
     }
 
     return true;

@@ -248,7 +248,7 @@ class WhatsAppTaskIntakeService {
   async promptForList(session) {
     const recommended = session.targetList?.name || 'General';
     const reason = session.blueprint?.listReason || 'AI suggestion';
-    await whatsappService.sendMessage(session.chatId, `📂 القائمة المقترحة: ${recommended}\nℹ️ السبب: ${reason}\n\nأرسل رقم القائمة لتغييرها أو 99 لعرض كل القوائم بالأرقام.\n0 للإلغاء.`);
+    await whatsappService.sendMessage(session.chatId, `📂 القائمة المقترحة: ${recommended}\nℹ️ السبب: ${reason}\n\n1. اعتماد القائمة المقترحة والمتابعة\nأرسل رقم قائمة آخر للتغيير أو 99 لعرض كل القوائم بالأرقام.\n0 للإلغاء.`);
   }
 
   async promptForAssignee(session) {
@@ -276,6 +276,13 @@ class WhatsAppTaskIntakeService {
     if (choices.length === 0) {
       await whatsappService.sendMessage(session.chatId, 'أرسل رقم القائمة أو 99 لعرض القوائم بالأرقام.');
       await this.promptForList(session);
+      return;
+    }
+
+    if (choices.includes(1)) {
+      await whatsappService.sendMessage(session.chatId, `📂 تم اعتماد القائمة المقترحة: ${session.targetList?.name || 'General'}`);
+      session.stage = 'SELECTING_ASSIGNEE';
+      await this.promptForAssignee(session);
       return;
     }
 

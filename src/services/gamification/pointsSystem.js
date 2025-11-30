@@ -33,7 +33,7 @@ export const BASE_POINTS = {
 export const MULTIPLIERS = {
   // Time-based multipliers
   WEEKEND: 1.5,          // Saturday & Friday
-  LATE_NIGHT: 1.3,       // After 10 PM
+  LATE_NIGHT: 1.5,       // After 10 PM
   EARLY_MORNING: 1.2,    // Before 7 AM
   WORKING_HOURS: 1.0,    // 9 AM - 6 PM (normal)
 
@@ -54,6 +54,11 @@ export const MULTIPLIERS = {
  * Calculate base points for a task
  */
 export function calculateBasePoints(task) {
+  const aiWeight = Number(task?.ai_weight);
+  if (Number.isFinite(aiWeight) && aiWeight > 0) {
+    return aiWeight;
+  }
+
   let points = BASE_POINTS.TASK_NORMAL;
 
   // Check priority

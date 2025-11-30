@@ -12,7 +12,10 @@ class OpenAIProvider extends AIProviderInterface {
   constructor() {
     super();
     this.apiKey = env.ai.openai.apiKey;
-    this.model = env.ai.openai.model;
+    this.primaryModel = env.ai.openai.model;
+    this.fallbackModels = env.ai.openai.fallbackModels || [];
+    this.modelsToTry = this.buildModelPriorityList();
+    this.model = this.modelsToTry[0];
     this.apiUrl = 'https://api.openai.com/v1/chat/completions';
 
     if (this.isAvailable()) {
@@ -28,23 +31,65 @@ class OpenAIProvider extends AIProviderInterface {
     return !!(this.apiKey && this.apiKey !== 'your_openai_api_key_here' && !this.apiKey.includes('YOUR-API-KEY'));
   }
 
-  /**
-   * Generate completion using OpenAI
-   * @param {string} systemPrompt - System instruction
-   * @param {string} userMessage - User message
-   * @param {Object} options - Additional options
-   * @returns {Promise<string>} AI response
-   */
-  async generateCompletion(systemPrompt, userMessage, options = {}) {
+  buildModelPriorityList() {
+    const uniqueModels = new Set([
+      this.primaryModel,
+      ...(this.fallbackModels || [])
+    ].filter(Boolean));
+
+    return Array.from(uniqueModels);
+  }
+
+  shouldFallback(error) {
+    const status = error.response?.status;
+    const errorCode = error.response?.data?.error?.code;
+    return status === 404 || errorCode === 'model_not_found';
+  }
+
+  async withModelFallback(executor) {
     if (!this.isAvailable()) {
       throw new Error('OpenAI API key is not configured');
     }
 
-    try {
+    let lastError;
+
+    for (const model of this.modelsToTry) {
+      try {
+        const result = await executor(model);
+        if (this.model !== model) {
+          logger.warn('OpenAI provider switched model due to fallback', {
+            previousModel: this.model,
+            newModel: model
+          });
+          this.model = model;
+        }
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (this.shouldFallback(error)) {
+          logger.warn('OpenAI model unavailable, attempting fallback', {
+            failedModel: model,
+            error: error.response?.data?.error || error.message
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    logger.error('All configured OpenAI models failed', { attemptedModels: this.modelsToTry });
+    throw lastError || new Error('Unable to reach OpenAI with any configured model');
+  }
+
+  /**
+   * Generate completion using OpenAI
+   */
+  async generateCompletion(systemPrompt, userMessage, options = {}) {
+    return this.withModelFallback(async (model) => {
       const response = await axios.post(
         this.apiUrl,
         {
-          model: this.model,
+          model,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userMessage }
@@ -61,33 +106,19 @@ class OpenAIProvider extends AIProviderInterface {
       );
 
       return response.data?.choices?.[0]?.message?.content?.trim() || '';
-    } catch (error) {
-      logger.error('OpenAI API error', {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-      throw error;
-    }
+    });
   }
 
   /**
    * Chat with OpenAI (multi-turn conversation)
-   * @param {Array} messages - Array of {role, content} messages
-   * @param {Object} options - Additional options
-   * @returns {Promise<string>} AI response
    */
   async chat(messages, options = {}) {
-    if (!this.isAvailable()) {
-      throw new Error('OpenAI API key is not configured');
-    }
-
-    try {
+    return this.withModelFallback(async (model) => {
       const response = await axios.post(
         this.apiUrl,
         {
-          model: this.model,
-          messages: messages,
+          model,
+          messages,
           max_tokens: options.maxTokens || 1024,
           temperature: options.temperature || 0.7
         },
@@ -100,33 +131,67 @@ class OpenAIProvider extends AIProviderInterface {
       );
 
       return response.data?.choices?.[0]?.message?.content?.trim() || '';
-    } catch (error) {
-      logger.error('OpenAI chat error', {
-        error: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-      throw error;
-    }
+    });
+  }
+
+  /**
+   * Generate vision completion using OpenAI (supports base64/data URLs)
+   */
+  async generateVisionCompletion(systemPrompt, userMessage, images = [], options = {}) {
+    return this.withModelFallback(async (model) => {
+      const imageContents = (images || [])
+        .filter(Boolean)
+        .map((image) => {
+          if (typeof image === 'string') {
+            return { type: 'image_url', image_url: { url: image, detail: 'high' } };
+          }
+
+          if (image.url) {
+            return { type: 'image_url', image_url: { url: image.url, detail: image.detail || 'high' } };
+          }
+
+          return null;
+        })
+        .filter(Boolean);
+
+      const userContent = [
+        { type: 'text', text: userMessage },
+        ...imageContents
+      ];
+
+      const response = await axios.post(
+        this.apiUrl,
+        {
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent }
+          ],
+          max_tokens: options.maxTokens || 900,
+          temperature: options.temperature ?? 0.35
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.apiKey}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      return response.data?.choices?.[0]?.message?.content?.trim() || '';
+    });
   }
 
   /**
    * Stream chat response (for future use)
-   * @param {Array} messages - Array of messages
-   * @param {Function} onChunk - Callback for each chunk
-   * @param {Object} options - Additional options
    */
   async streamChat(messages, onChunk, options = {}) {
-    if (!this.isAvailable()) {
-      throw new Error('OpenAI API key is not configured');
-    }
-
-    try {
+    return this.withModelFallback(async (model) => {
       const response = await axios.post(
         this.apiUrl,
         {
-          model: this.model,
-          messages: messages,
+          model,
+          messages,
           max_tokens: options.maxTokens || 1024,
           temperature: options.temperature || 0.7,
           stream: true
@@ -164,12 +229,7 @@ class OpenAIProvider extends AIProviderInterface {
           }
         }
       });
-    } catch (error) {
-      logger.error('OpenAI stream error', {
-        error: error.message
-      });
-      throw error;
-    }
+    });
   }
 }
 

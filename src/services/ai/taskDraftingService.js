@@ -24,7 +24,7 @@ class TaskDraftingService {
       {
         key: 'clients_order_approvals',
         reason: 'Order approval keywords detected (اعتماد طلب / approvals).',
-        keywords: ['اعتماد طلب', 'approve order', 'اعتماد اوردر', 'approval request', 'purchase order', 'امر شراء', 'طلب شراء']
+        keywords: ['اعتماد طلب', 'إتماد طلب', 'approve order', 'اعتماد اوردر', 'approval request', 'purchase order', 'امر شراء', 'طلب شراء']
       },
       {
         key: 'clients_sample_approvals',
@@ -725,6 +725,17 @@ Return an action-oriented English task title that stays true to the note.`;
     const normalized = this.normalizeText(requestText);
     if (!normalized) return null;
 
+    const startsWithApproval = normalized.startsWith('اعتماد طلب') || normalized.startsWith('إتماد طلب');
+    if (startsWithApproval) {
+      const match = catalog.find(list => list.key === 'clients_order_approvals');
+      if (match) {
+        return {
+          listKey: match.key,
+          listReason: 'Detected leading "اعتماد طلب" keyword, routing to order approvals list.'
+        };
+      }
+    }
+
     const startsWithPurchase = normalized.startsWith('شراء ')
       || normalized === 'شراء'
       || normalized.startsWith('شرائ ')
@@ -880,7 +891,8 @@ Return an action-oriented English task title that stays true to the note.`;
       'po_',
       'طلب شراء',
       'امر شراء',
-      'اعتماد طلب'
+      'اعتماد طلب',
+      'إتماد طلب'
     ];
 
     const hasPoKeyword = purchaseKeywords.some(keyword => normalizedFields.includes(this.normalizeText(keyword)));

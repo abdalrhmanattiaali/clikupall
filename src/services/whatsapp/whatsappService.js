@@ -96,12 +96,22 @@ class WhatsAppService {
       logger.error('WhatsApp client error', { error: error.message });
     });
 
-    // Diagnostic: Log incoming messages
+    // Diagnostic: Log incoming messages + emit to event bus
     this.client.on('message', message => {
       if (message.from !== 'status@broadcast') {
         logger.debug('WhatsApp message received', {
           from: message.from.substring(0, 15) + '...',
-          body: message.body.substring(0, 50)
+          body: message.body?.substring(0, 50)
+        });
+
+        eventBus.emitEvent(EVENTS.WHATSAPP_MESSAGE_RECEIVED, {
+          chatId: message.from,
+          isGroup: message.from.endsWith('@g.us'),
+          hasMedia: message.hasMedia,
+          body: message.body,
+          fromMe: message.fromMe,
+          timestamp: message.timestamp,
+          raw: message
         });
       }
     });

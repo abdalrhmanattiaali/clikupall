@@ -89,6 +89,24 @@ class AIService {
   }
 
   /**
+   * Generate AI completion with vision support when available
+   * @param {string} systemPrompt
+   * @param {string} userMessage
+   * @param {Array} images - Array of data URLs or {url, detail}
+   * @param {Object} options
+   */
+  async generateVisionCompletion(systemPrompt, userMessage, images = [], options = {}) {
+    if (typeof this.provider?.generateVisionCompletion === 'function') {
+      return this.provider.generateVisionCompletion(systemPrompt, userMessage, images, options);
+    }
+
+    logger.warn('Vision completion not supported by provider, falling back to text-only prompt');
+    const imagesNote = images?.length ? `Attached ${images.length} image(s) unavailable for analysis.` : 'No image provided.';
+    const fallbackPrompt = `${userMessage}\n${imagesNote}`;
+    return this.generateCompletion(systemPrompt, fallbackPrompt, options);
+  }
+
+  /**
    * Chat with AI (multi-turn conversation)
    * @param {Array} messages - Array of chat messages
    * @param {Object} options - Additional options

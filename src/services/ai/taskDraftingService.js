@@ -360,7 +360,10 @@ An image of the document is attached separately. Use it to detect the document t
 
   async ensureEnglishTitle(title, requestText) {
     const trimmedTitle = (title || '').trim();
-    if (this.looksEnglish(trimmedTitle)) {
+    const hasPurchaseIntent = this.hasPurchaseIntent(requestText);
+    const titleMatchesPurchase = this.titleMatchesPurchase(trimmedTitle);
+
+    if (this.looksEnglish(trimmedTitle) && (!hasPurchaseIntent || titleMatchesPurchase)) {
       return trimmedTitle;
     }
 
@@ -376,8 +379,9 @@ Return an action-oriented English task title that stays true to the note.`;
         maxTokens: 100
       });
       const parsed = this.extractJson(response);
-      if (parsed?.title) {
-        return parsed.title.trim();
+      const aiTitle = parsed?.title ? parsed.title.trim() : '';
+      if (aiTitle) {
+        return aiTitle;
       }
     } catch (error) {
       logger.warn('AI English title rewrite failed', { error: error.message });
@@ -479,6 +483,13 @@ Return an action-oriented English task title that stays true to the note.`;
         .replace(/^["'\s]+|["'\s]+$/g, '')
         .replace(/\s+/g, ' ')
         .trim();
+
+      const hasPurchaseIntent = this.hasPurchaseIntent(requestText || fallback);
+      const titleMatchesPurchase = this.titleMatchesPurchase(cleaned);
+      if (hasPurchaseIntent && !titleMatchesPurchase) {
+        const purchaseFallback = this.buildArabicPurchaseTitle(requestText, fallback, cleaned);
+        return purchaseFallback || cleaned || fallback;
+      }
 
       return cleaned || fallback;
     } catch (error) {
@@ -888,6 +899,37 @@ Return an action-oriented English task title that stays true to the note.`;
       .trim()
       .toLowerCase()
       .replace(/[\s]+/g, ' ');
+  }
+
+  hasPurchaseIntent(requestText) {
+    const normalized = this.normalizeText(requestText);
+    if (!normalized) return false;
+    return normalized.startsWith('شراء')
+      || normalized.includes('مشتريات')
+      || normalized.includes('purchase');
+  }
+
+  titleMatchesPurchase(title) {
+    if (!title) return false;
+    const normalized = this.normalizeText(title);
+    return normalized.includes('purchase')
+      || normalized.includes('procurement')
+      || normalized.includes('buy')
+      || normalized.includes('شراء')
+      || normalized.includes('مشتريات');
+  }
+
+  buildArabicPurchaseTitle(requestText, fallback, cleaned) {
+    const base = (requestText || cleaned || fallback || '').trim();
+    if (!base) return '';
+    const itemSnippet = base.replace(/^شراء\s*/i, '').trim();
+    const snippet = itemSnippet || base.slice(0, 60);
+
+    if (snippet) {
+      return `شراء ${snippet}`;
+    }
+
+    return fallback;
   }
 }
 

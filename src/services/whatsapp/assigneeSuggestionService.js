@@ -12,7 +12,8 @@ import { isNonOpenStatus } from '../../config/constants.js';
  */
 class AssigneeSuggestionService {
   constructor() {
-    this.pendingOffers = new Map(); // chatId -> { member, offers: [offer], createdAt }
+    this.pendingOffers = new Map(); // chatId -> { member, offers: [offer], backlog: [offer], waitingForMore: bool }
+    this.BATCH_LIMIT = 10;
   }
 
   /**
@@ -76,6 +77,7 @@ class AssigneeSuggestionService {
         url: task.url || `https://app.clickup.com/t/${task.id}`,
         status: task.status?.status || task.status?.type || 'Open',
         listName: task.list?.name || 'قائمة غير معروفة',
+        category: this.deriveTaskCategory(task),
         parentId: task.parent || task.parent_id || null,
         aiWeight: this.extractAiWeight(task),
         priority: task.priority?.priority || task.priority?.label || 'عادية'
@@ -121,14 +123,7 @@ class AssigneeSuggestionService {
         return sum + (Number.isFinite(w) ? w : 0);
       }, 0);
 
-      const categories = {};
-      entries.forEach(entry => {
-        if (Array.isArray(entry.categories)) {
-          entry.categories.forEach(cat => {
-            categories[cat] = (categories[cat] || 0) + 1;
-          });
-        }
-      });
+      const categories = this.buildCategoryIndex(entries);
 
       const skillIndex = (entries.length * 2) + (todayEntries.length * 3) + (weekEntries.length * 1.5) + (weightSum * 0.2);
 
@@ -140,11 +135,42 @@ class AssigneeSuggestionService {
         week: weekEntries.length,
         weightSum,
         categories,
+        topCategories: this.rankCategories(categories),
         skillIndex: Number(skillIndex.toFixed(2))
       });
     }
 
     return profiles;
+  }
+
+  buildCategoryIndex(entries) {
+    const categories = {};
+
+    entries.forEach(entry => {
+      if (Array.isArray(entry.categories) && entry.categories.length > 0) {
+        entry.categories.forEach(cat => {
+          const key = (cat || '').trim();
+          if (!key) return;
+          categories[key] = (categories[key] || 0) + 1;
+        });
+        return;
+      }
+
+      const listName = entry.listName || entry.list || entry.folderName;
+      if (listName) {
+        const normalized = this.normalizeCategory(listName);
+        categories[normalized] = (categories[normalized] || 0) + 1;
+      }
+    });
+
+    return categories;
+  }
+
+  rankCategories(categories = {}) {
+    return Object.entries(categories)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({ name, count }))
+      .slice(0, 5);
   }
 
   isToday(timestamp) {
@@ -171,9 +197,19 @@ class AssigneeSuggestionService {
   }
 
   async recommendAssignee(task, memberProfiles) {
-    const systemPrompt = 'أنت مدير عمليات تختار أفضل شخص لاستلام مهمة غير مسندة بناءً على إنجازات الفريق. اختر عضواً واحداً فقط من القائمة وأعد النتيجة بصيغة JSON.';
+    const systemPrompt = 'أنت مدير عمليات تختار أفضل شخص لاستلام مهمة غير مسندة بناءً على إنجازات الفريق وأنواع المهام التي يبرع فيها كل عضو. اختر عضواً واحداً فقط وأعد النتيجة بصيغة JSON.';
 
-    const userPrompt = `المهمة: ${task.name}\nالقائمة: ${task.listName}\nالحالة: ${task.status}\nالوزن التقديري: ${task.aiWeight || 'غير محدد'}\nالأولوية: ${task.priority}\n\nأعضاء الفريق مع المؤشرات:\n${JSON.stringify(memberProfiles)}\n\nأعد JSON بالشكل {"assignee_id": <id>, "reason": "...", "confidence": 0-1}`;
+    const profileDigest = memberProfiles.map(p => ({
+      id: p.id,
+      name: p.name,
+      today: p.today,
+      week: p.week,
+      total: p.total,
+      weightSum: p.weightSum,
+      topCategories: p.topCategories
+    }));
+
+    const userPrompt = `المهمة: ${task.name}\nالقائمة: ${task.listName}\nالتصنيف: ${task.category}\nالحالة: ${task.status}\nالوزن التقديري: ${task.aiWeight || 'غير محدد'}\nالأولوية: ${task.priority}\n\nأعضاء الفريق مع أفضل التصنيفات:\n${JSON.stringify(profileDigest)}\n\nأعد JSON بالشكل {"assignee_id": <id>, "reason": "...", "confidence": 0-1}`;
 
     try {
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, { temperature: 0.4, maxTokens: 400 });
@@ -185,14 +221,33 @@ class AssigneeSuggestionService {
       logger.warn('AI recommendation failed, using fallback', { error: error.message });
     }
 
-    const fallback = [...memberProfiles].sort((a, b) => b.skillIndex - a.skillIndex)[0];
+    const fallback = this.pickBestByCategory(task, memberProfiles) || [...memberProfiles].sort((a, b) => b.skillIndex - a.skillIndex)[0];
     if (!fallback) return null;
 
     return {
       assigneeId: fallback.id,
-      reason: `ترجيح يدوي: أعلى مؤشر إنجاز (${fallback.skillIndex})`,
+      reason: fallback.fallbackReason || `ترجيح يدوي: أعلى مؤشر إنجاز (${fallback.skillIndex})`,
       confidence: 0.55
     };
+  }
+
+  pickBestByCategory(task, memberProfiles) {
+    if (!task?.category) return null;
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (const profile of memberProfiles) {
+      const count = profile.categories?.[task.category] || 0;
+      const score = (count * 3) + profile.skillIndex;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = { ...profile, fallbackReason: `ترجيح بناءً على خبرة سابقة في "${task.category}" (عدد ${count})` };
+      }
+    }
+
+    return best;
   }
 
   parseRecommendation(response) {
@@ -216,9 +271,15 @@ class AssigneeSuggestionService {
 
   async queueOffer(member, task, recommendation) {
     const chatId = getWhatsAppId(member);
-    const existing = this.pendingOffers.get(chatId) || { member, offers: [] };
+    const existing = this.pendingOffers.get(chatId) || { member, offers: [], backlog: [], waitingForMore: false };
 
-    existing.offers.push({ task, recommendation, createdAt: Date.now() });
+    const offer = { task, recommendation, createdAt: Date.now() };
+
+    if (existing.offers.length < this.BATCH_LIMIT && !existing.waitingForMore) {
+      existing.offers.push(offer);
+    } else {
+      existing.backlog.push(offer);
+    }
     this.pendingOffers.set(chatId, existing);
 
     if (existing.offers.length === 1) {
@@ -271,11 +332,29 @@ class AssigneeSuggestionService {
 
     const choice = parseInt(body, 10);
     if (Number.isNaN(choice)) {
-      await whatsappService.sendMessage(chatId, 'الرجاء الرد برقم 1 أو 2 فقط.');
+      await whatsappService.sendMessage(chatId, 'الرجاء الرد برقم رقمي من القائمة.');
       return true;
     }
 
     const session = this.pendingOffers.get(chatId);
+    if (session.waitingForMore) {
+      if (choice === 1) {
+        session.waitingForMore = false;
+        session.offers = session.backlog.splice(0, this.BATCH_LIMIT);
+        if (session.offers.length > 0) {
+          await this.sendOfferMessage(chatId, session.member, session.offers[0]);
+        } else {
+          this.pendingOffers.delete(chatId);
+        }
+      } else if (choice === 2) {
+        await whatsappService.sendMessage(chatId, 'تم إيقاف الترشيحات الإضافية لليوم.');
+        this.pendingOffers.delete(chatId);
+      } else {
+        await whatsappService.sendMessage(chatId, 'الخيارات: 1 للمزيد، 2 للإيقاف.');
+      }
+      return true;
+    }
+
     const currentOffer = session.offers[0];
 
     if (choice === 1) {
@@ -291,6 +370,9 @@ class AssigneeSuggestionService {
 
     if (session.offers.length > 0) {
       await this.sendOfferMessage(chatId, session.member, session.offers[0]);
+    } else if (session.backlog.length > 0) {
+      session.waitingForMore = true;
+      await whatsappService.sendMessage(chatId, 'انتهت أول دفعة من الترشيحات (10). هل تريد المزيد؟\n1) نعم، اعرض دفعة جديدة\n2) لا، أوقف الترشيحات');
     } else {
       this.pendingOffers.delete(chatId);
     }
@@ -331,6 +413,22 @@ class AssigneeSuggestionService {
     const member = findMemberByPhone(chatId);
     if (!member) return false;
     return this.hasPendingOffer(chatId);
+  }
+
+  deriveTaskCategory(task) {
+    const raw = task?.list?.name || task?.listName || '';
+    const normalized = this.normalizeCategory(raw);
+    return normalized || 'متنوعة';
+  }
+
+  normalizeCategory(name = '') {
+    const lower = name.toLowerCase();
+    if (lower.includes('شراء') || lower.includes('شرائ') || lower.includes('مشتريات') || lower.startsWith('شراء') || lower.startsWith('شرائ') || lower.includes('procurement')) return 'مشتريات';
+    if (lower.includes('تحويل') || lower.includes('استقبال اموال') || lower.includes('تحصيل')) return 'مالية';
+    if (lower.includes('عميل') || lower.includes('طلبات') || lower.includes('عينات')) return 'عملاء';
+    if (lower.includes('تشغي') || lower.includes('تشغيل') || lower.includes('تحضير')) return 'تشغيل';
+    if (lower.includes('erp') || lower.includes('system') || lower.includes('نظام')) return 'أنظمة';
+    return name.trim() || 'متنوعة';
   }
 }
 

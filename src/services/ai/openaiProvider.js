@@ -32,12 +32,26 @@ class OpenAIProvider extends AIProviderInterface {
   }
 
   buildModelPriorityList() {
+    const DEFAULT_MODELS = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+
+    const sanitize = (model) => (model || '').trim().toLowerCase();
+
     const uniqueModels = new Set([
-      this.primaryModel,
-      ...(this.fallbackModels || [])
+      sanitize(this.primaryModel),
+      ...((this.fallbackModels || []).map(sanitize))
     ].filter(Boolean));
 
-    return Array.from(uniqueModels);
+    // Ensure we always have at least one viable model by appending safe defaults.
+    DEFAULT_MODELS.forEach((m) => uniqueModels.add(m));
+
+    const prioritized = Array.from(uniqueModels);
+
+    if (!prioritized.length) {
+      logger.warn('OpenAI model list empty; using safe defaults');
+      return DEFAULT_MODELS;
+    }
+
+    return prioritized;
   }
 
   shouldFallback(error) {

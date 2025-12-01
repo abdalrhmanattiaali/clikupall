@@ -377,33 +377,52 @@ An image of the document is attached separately. Use it to detect the document t
   async ensureEnglishTitle(title, requestText) {
     const trimmedTitle = (title || '').trim();
     const hasPurchaseIntent = this.hasPurchaseIntent(requestText);
+    const hasApprovalIntent = this.hasApprovalIntent(requestText);
     const titleMatchesPurchase = this.titleMatchesPurchase(trimmedTitle);
+    const titleMatchesApproval = this.titleMatchesApproval(trimmedTitle);
 
-    if (this.looksEnglish(trimmedTitle) && (!hasPurchaseIntent || titleMatchesPurchase)) {
+    if (
+      this.looksEnglish(trimmedTitle)
+      && (!hasPurchaseIntent || titleMatchesPurchase)
+      && (!hasApprovalIntent || titleMatchesApproval)
+    ) {
       return trimmedTitle;
     }
 
     try {
-      const systemPrompt = 'You rewrite short task names into polished English titles (max 9 words). Always preserve the core nouns, quantities, and whether it is a purchase/procurement, approval, or finance action. If the note contains شراء/مشتريات/purchase, include "Purchase" or "Procurement". Respond with JSON {"title": "..."} only.';
+      const systemPrompt = 'You rewrite short task names into polished English titles (max 9 words). Preserve the original intent and keywords; do NOT replace approvals with adjustments or vice versa. Start with a verb (Approve, Review, Prepare, Deliver, Create, Ship, Collect, etc.), keep nouns/quantities/POs, and include "Purchase/Procurement" or "Approval" when the note implies it. Respond with JSON {"title": "..."} only.';
       const hint = this.buildIntentHint(requestText);
       const userPrompt = `Original WhatsApp note: ${requestText}
 Current title: ${trimmedTitle || 'N/A'}
 Intent hint: ${hint}
-Return an action-oriented English task title that stays true to the note.`;
+Return an action-oriented English task title that stays true to the note without changing its meaning.`;
       const response = await aiService.generateCompletion(systemPrompt, userPrompt, {
-        temperature: 0.2,
-        maxTokens: 100
+        temperature: 0.18,
+        maxTokens: 120
       });
       const parsed = this.extractJson(response);
       const aiTitle = parsed?.title ? parsed.title.trim() : '';
       if (aiTitle) {
+        if (hasPurchaseIntent && !this.titleMatchesPurchase(aiTitle)) {
+          return this.buildPurchaseTitleFromRequest(requestText, aiTitle);
+        }
+        if (hasApprovalIntent && !this.titleMatchesApproval(aiTitle)) {
+          return this.buildApprovalTitleFromRequest(requestText, aiTitle);
+        }
         return aiTitle;
       }
     } catch (error) {
       logger.warn('AI English title rewrite failed', { error: error.message });
     }
 
-    return this.fallbackEnglishTitle(requestText);
+    const fallback = this.fallbackEnglishTitle(requestText);
+    if (hasPurchaseIntent && !this.titleMatchesPurchase(fallback)) {
+      return this.buildPurchaseTitleFromRequest(requestText, fallback);
+    }
+    if (hasApprovalIntent && !this.titleMatchesApproval(fallback)) {
+      return this.buildApprovalTitleFromRequest(requestText, fallback);
+    }
+    return fallback;
   }
 
   looksEnglish(text) {
@@ -470,6 +489,36 @@ Return an action-oriented English task title that stays true to the note.`;
     }
 
     return '';
+  }
+
+  hasApprovalIntent(requestText) {
+    const normalized = this.normalizeText(requestText);
+    if (!normalized) return false;
+    return normalized.includes('اعتماد') || normalized.includes('approval') || normalized.includes('approve');
+  }
+
+  titleMatchesApproval(title) {
+    const normalized = this.normalizeText(title);
+    if (!normalized) return false;
+    return normalized.includes('approve') || normalized.includes('approval');
+  }
+
+  buildApprovalTitleFromRequest(requestText, fallbackTitle) {
+    const normalized = this.normalizeText(requestText);
+    const numbers = (requestText.match(/[0-9.,]+/g) || []).join(' ').trim();
+    const shortArabic = requestText.trim().split(/\s+/).slice(0, 4).join(' ');
+    if (normalized) {
+      return `Approve ${numbers || shortArabic || fallbackTitle}`.trim();
+    }
+    return `Approval Request: ${fallbackTitle}`;
+  }
+
+  buildPurchaseTitleFromRequest(requestText, fallbackTitle) {
+    const numbers = (requestText.match(/[0-9.,]+/g) || []).join(' ').trim();
+    const shortArabic = requestText.trim().split(/\s+/).slice(0, 4).join(' ');
+    return numbers
+      ? `Purchase ${numbers}`
+      : `Purchase ${shortArabic || fallbackTitle}`;
   }
 
   async ensureArabicTitle(blueprint, requestText) {

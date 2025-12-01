@@ -390,7 +390,7 @@ An image of the document is attached separately. Use it to detect the document t
     }
 
     try {
-      const systemPrompt = 'You rewrite short task names into polished English titles (max 9 words). Preserve the original intent and keywords; do NOT replace approvals with adjustments or vice versa. Start with a verb (Approve, Review, Prepare, Deliver, Create, Ship, Collect, etc.), keep nouns/quantities/POs, and include "Purchase/Procurement" or "Approval" when the note implies it. Respond with JSON {"title": "..."} only.';
+      const systemPrompt = 'You rewrite task names into polished English titles (keep key words; up to ~15 words). Preserve EVERY important token (numbers, ingredients, product names, customer names, PO/approval wording). Do NOT swap approval with adjustment. Start with a verb (Approve, Review, Prepare, Deliver, Create, Ship, Collect, etc.), keep nouns/quantities/POs, and include "Purchase/Procurement" or "Approval" when the note implies it. Respond with JSON {"title": "..."} only.';
       const hint = this.buildIntentHint(requestText);
       const userPrompt = `Original WhatsApp note: ${requestText}
 Current title: ${trimmedTitle || 'N/A'}
@@ -404,12 +404,12 @@ Return an action-oriented English task title that stays true to the note without
       const aiTitle = parsed?.title ? parsed.title.trim() : '';
       if (aiTitle) {
         if (hasPurchaseIntent && !this.titleMatchesPurchase(aiTitle)) {
-          return this.buildPurchaseTitleFromRequest(requestText, aiTitle);
+          return this.mergeSourceDetails(this.buildPurchaseTitleFromRequest(requestText, aiTitle), requestText, { language: 'en' });
         }
         if (hasApprovalIntent && !this.titleMatchesApproval(aiTitle)) {
-          return this.buildApprovalTitleFromRequest(requestText, aiTitle);
+          return this.mergeSourceDetails(this.buildApprovalTitleFromRequest(requestText, aiTitle), requestText, { language: 'en' });
         }
-        return aiTitle;
+        return this.mergeSourceDetails(aiTitle, requestText, { language: 'en' });
       }
     } catch (error) {
       logger.warn('AI English title rewrite failed', { error: error.message });
@@ -417,12 +417,12 @@ Return an action-oriented English task title that stays true to the note without
 
     const fallback = this.fallbackEnglishTitle(requestText);
     if (hasPurchaseIntent && !this.titleMatchesPurchase(fallback)) {
-      return this.buildPurchaseTitleFromRequest(requestText, fallback);
+      return this.mergeSourceDetails(this.buildPurchaseTitleFromRequest(requestText, fallback), requestText, { language: 'en' });
     }
     if (hasApprovalIntent && !this.titleMatchesApproval(fallback)) {
-      return this.buildApprovalTitleFromRequest(requestText, fallback);
+      return this.mergeSourceDetails(this.buildApprovalTitleFromRequest(requestText, fallback), requestText, { language: 'en' });
     }
-    return fallback;
+    return this.mergeSourceDetails(fallback, requestText, { language: 'en' });
   }
 
   looksEnglish(text) {
@@ -534,7 +534,7 @@ Return an action-oriented English task title that stays true to the note without
 
     try {
       const systemPrompt = 'You are a concise Arabic copywriter who drafts short, clear task titles. '
-        + 'Keep the meaning of the English title and source note, preserve numbers/POs/customer hints, '
+        + 'Keep the meaning of the English title and source note, preserve ALL numbers/POs/customer hints/ingredients, '
         + 'and respond with a single Arabic title. No markdown, no quotes, max 90 characters.';
 
       const userPrompt = `English title: ${defaultTitle}\nArabic source note: ${request || 'N/A'}\nList: ${blueprint?.listKey || 'unknown'}\nReason: ${blueprint?.listReason || 'N/A'}`;
@@ -553,14 +553,56 @@ Return an action-oriented English task title that stays true to the note without
       const titleMatchesPurchase = this.titleMatchesPurchase(cleaned);
       if (hasPurchaseIntent && !titleMatchesPurchase) {
         const purchaseFallback = this.buildArabicPurchaseTitle(requestText, fallback, cleaned);
-        return purchaseFallback || cleaned || fallback;
+        return this.mergeSourceDetails(purchaseFallback || cleaned || fallback, requestText, { language: 'ar' });
       }
 
-      return cleaned || fallback;
+      return this.mergeSourceDetails(cleaned || fallback, requestText, { language: 'ar' });
     } catch (error) {
       logger.warn('Arabic title generation failed; using fallback', { error: error.message });
-      return fallback;
+      return this.mergeSourceDetails(fallback, requestText, { language: 'ar' });
     }
+  }
+
+  mergeSourceDetails(title, requestText, { language = 'en', maxLength = 140 } = {}) {
+    const baseTitle = (title || '').trim();
+    if (!requestText) {
+      return baseTitle;
+    }
+
+    const normalizedTitle = this.normalizeText(baseTitle);
+    const tokens = this.extractImportantTokens(requestText, language);
+    const missing = tokens.filter(token => !normalizedTitle.includes(this.normalizeText(token)));
+
+    if (missing.length === 0) {
+      return baseTitle;
+    }
+
+    const suffix = missing.slice(0, 3).join(' / ');
+    const merged = `${baseTitle} – ${suffix}`.trim();
+    if (merged.length <= maxLength) {
+      return merged;
+    }
+
+    return merged.slice(0, maxLength);
+  }
+
+  extractImportantTokens(text, language = 'en') {
+    if (!text) return [];
+
+    const numbers = (text.match(/[0-9]+[\w\-\/]*/g) || []).slice(0, 4);
+    const words = text
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter(word => word.length >= 3)
+      .slice(0, 12);
+
+    const tokens = Array.from(new Set([...numbers, ...words]));
+
+    if (language === 'ar' && !tokens.some(t => /[ء-ي]/.test(t))) {
+      return tokens;
+    }
+
+    return tokens;
   }
 
   extractJson(response) {
